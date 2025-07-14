@@ -6,25 +6,47 @@ Created on Fri May 15 12:06:43 2020
 """
 
 import matplotlib
-import cupy as np
+import torch
+import torch.cuda
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import figure
 from scipy.spatial import cKDTree
 import psutil
 import socket
 
-def get_calculation_parameters(structure):
-    """return the parameters that are necessary for the calculation
-    N_points : The amount of points in the structure
-    d_first_neighbours : The average distance between first neighbours"""
+def calculate_structure_factor(read_folder, file, range_calculation, vector_step, save_folder):
     
-    N_points = len(structure)
-    tree = cKDTree(structure)  # create tree of closest neighbours
-    d, k = tree.query(structure,k=2)
-    d_first_neighbours = np.average(d[:,1])
+    structure_to_calculate = np.genfromtxt(read_folder + file + '.csv', delimiter=',')
+    structure_to_calculate_tensor = torch.from_numpy(structure_to_calculate)
     
-    return d_first_neighbours, N_points
-    
+    D, N = get_calculation_parameters(structure_to_calculate)
+    d_x, d_y, q = generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, D)
+    d_x = d_x.cuda()
+    d_y = d_y.cuda()
+    q = q.cuda()
+    N = torch.tensor(N, dtype=torch.float)
+    N = N.cuda()
+
+    print(q[0]*1e6,q[-1]*1e6)
+        
+    structure_factor = torch.zeros((len(q),len(q)))
+    for a in range(len(q)):
+        print(str(a/len(q)*100)+"%")
+        for b in range(len(q)):
+            structure_factor[a,b] = (1/N)*torch.sum(torch.exp(1j*(q[a]*d_x + q[b]*d_y)))  
+
+
+    structure_factor = structure_factor.cpu()
+    structure_factor = structure_factor.numpy() 
+    q = q.cpu()
+    q = q.numpy()
+
+    Sq,R = radial_average(structure_factor,q)
+
+    save_data(structure_factor, q, D, Sq, R, save_folder, file)
+
+
 def generate_vectors(structure, domain, vector_step, particule_distance): 
     """Generates the vector used for the calculation of the structure factor.
     distances_x, distances_y : vectors that contains the distances between all points along the x anf y axis respectivly
@@ -43,124 +65,21 @@ def generate_vectors(structure, domain, vector_step, particule_distance):
     #set q vector
     border = domain/particule_distance;
     step = vector_step/particule_distance;
-    scat_vector = np.arange(0,border,step)
+    scat_vector = torch.arange(0,border,step)
 
     return distances_x, distances_y, scat_vector
 
-def select_calculation_method(vector,q):
-    """Select the calculation method depeding on memory of the computer, the maximum memory is half of the memory of the pc"""
-    max_size_array = (2/3)*(psutil.virtual_memory().total/vector.itemsize)
+def get_calculation_parameters(structure):
+    """return the parameters that are necessary for the calculation
+    N_points : The amount of points in the structure
+    d_first_neighbours : The average distance between first neighbours"""
     
-    if max_size_array < np.size(vector,axis=1)*len(q):
-       selector = "iterative"
-       
-    elif max_size_array > (np.size(vector,axis=1)*len(q)**2):
-           selector = "matrix"
-    else:
-          selector = "matrix_by_parts"
-          
-    return selector
-
-def iterative_method(d_x,d_y,q,N):
+    N_points = float(len(structure))
+    tree = cKDTree(structure)  # create tree of closest neighbours
+    d, k = tree.query(structure,k=2)
+    d_first_neighbours = np.average(d[:,1])
     
-    structure_factor = np.zeros((len(q),len(q)))
-    for a in range(len(q)):
-        print(str(a/len(q)*100)+"%")
-        for b in range(len(q)):
-            structure_factor[a,b] = (1/N)*np.sum(np.exp(1j*(q[a]*d_x + q[b]*d_y)))
-                
-                
-    return structure_factor
-                
-def generate_calculation_matrix(d_x,d_y,q):
-    
-    d_x = d_x.reshape(np.ma.size(d_x,axis=1),1)
-    d_y = d_y.reshape(np.ma.size(d_y,axis=1),1)
-                    
-    mult_x = d_x*q
-    mult_y = d_y*q
-                    
-    mult_y = mult_y.reshape(np.ma.size(mult_y,axis=0),np.ma.size(mult_y,axis=1),1)
-    matrix_dq_y = np.swapaxes(mult_y,0,1)
-                    
-    mult_x = mult_x.reshape(np.ma.size(mult_x,axis=0),np.ma.size(mult_x,axis=1),1)
-    mult_x = np.swapaxes(mult_x,0,1)
-    matrix_dq_x = np.swapaxes(mult_x,0,2) 
-    
-    return matrix_dq_x, matrix_dq_y
-        
-def matrix_method(m_x,m_y,N,q_length):
-    
-    structure_factor = np.zeros((q_length,q_length))
-    
-    structure_factor =(1/N)*np.sum(np.cos(m_x+m_y), axis=1)
-    
-    return structure_factor
-
-def matrix_by_parts_method(m_x,m_y,N,q_length):
-    
-    structure_factor = np.zeros((q_length,q_length))
-    max_size_array = (2/3)*(psutil.virtual_memory().total/m_x.itemsize)
-    max_dim = int(max_size_array / (np.ma.size(m_y,axis=1)*q_length))
-    count = 1
-    while np.ma.size(m_y,axis=0) > max_dim*count:
-        structure_factor[(max_dim*(count-1)):max_dim*count,:] =(1/N)*np.sum(np.cos(m_x+m_y[(max_dim*(count-1)):max_dim*count,:]), axis=1)
-        print(str((1-((np.ma.size(m_y,axis=0) - max_dim*count)/np.ma.size(m_y,axis=0)))*100) + "%")
-        count+=1
-                   
-    structure_factor[(max_dim*(count-1)):,:] = (1/N)*np.sum(np.cos(m_x+m_y[(max_dim*(count-1)):,:]), axis=1)
-    
-    return structure_factor
-
-def remove_center_2D(structure_factor_2D,qD, vector_end):
-    
-    x_q,y_q = np.meshgrid(qD,qD)
-    X_r  = (x_q**2 + y_q**2)**0.5
-    structure_factor_2D[( X_r < vector_end)] = np.min(structure_factor_2D)
-    
-    return structure_factor_2D 
-   
-def remove_center_1D(structure_factor_1D,qD):
-    
-   structure_factor_1D[(qD < 1)] = 0
-    
-   return structure_factor_1D
-
-def remove_single_at_center(structure_factor):
-    
-    structure_factor[np.where(structure_factor == np.nanmax(structure_factor))] = 0
-
-    return structure_factor    
-
-def direct_Sq_calculation(structure,domain,vector_step, erase_center = False):
-
-    """ Calculates the structure factor with the method given by the selector "method" """
-    
-    D, Ptot = get_calculation_parameters(structure)
-    d_x, d_y, q = generate_vectors(structure, domain, vector_step, D)
-    method = select_calculation_method(d_x,q)
-    
-    print(method)
-    print(q[0]*1e6,q[-1]*1e6)
-        
-    if method == 'iterative':
-      
-        Sq_2D =  iterative_method(d_x,d_y,q,Ptot)
-               
-    elif method =='matrix':
-        
-        matrix_x,matrix_y = generate_calculation_matrix(d_x,d_y,q)
-        Sq_2D = matrix_method(matrix_x,matrix_y,Ptot,len(q))
-                   
-    elif method == 'matrix_by_parts':
-        
-        matrix_x,matrix_y = generate_calculation_matrix(d_x,d_y,q)
-        Sq_2D = matrix_by_parts_method(matrix_x,matrix_y,Ptot,len(q))
-        
-    if erase_center :
-        Sq_2D = remove_center(Sq_2D,q,D)
-        
-    return Sq_2D, D, q
+    return d_first_neighbours, N_points
 
 def radial_average(Sq,qD):
     
@@ -196,7 +115,7 @@ def save_data(Sq_2D, q, D, Sq, R, save_folder, filename):
     q_save = q.reshape(np.ma.size(q,axis=0),1)
     save_2D = np.append(Sq_2D, q_save,axis=1) 
     save_2D = np.append(save_2D, q_save*D,axis=1)
-    
+
     save_1D = [Sq,R,R*D]
 
     np.savetxt(save_folder + '2D_Sq_' + filename + '_range_' + str(round((q[-1]+q[1]-q[0])*D)) 
@@ -205,27 +124,7 @@ def save_data(Sq_2D, q, D, Sq, R, save_folder, filename):
     np.savetxt(save_folder + 'Sq_' + filename + '_range_' + str(round((q[-1]+q[1]-q[0])*D)) 
                + '_step_' + str(round((q[1]-q[0])*D,3)) +'.dat', save_1D, delimiter = ',',header='The row order is Sq,q,q.D.') 
     
-def calculate_and_save(read_folder, file, domain, vector_step, default_folder = True, save_folder = ''):
-    if default_folder:
-        if socket.gethostname() == 'Gil-MSI':
-            folder_write_files = 'D:/These/Programation/Structure_factor/Files/'
-
-        elif socket.gethostname() == 'DESKTOP-JB8QHQB':
-            folder_write_files = 'J:\Gil\Structure_factor/data_files/'
     
-        else:
-            folder_write_files = ''
-            
-    else:
-        folder_write_files = save_folder
-        
-    print(file)    
-    structure_to_calculate = np.genfromtxt(read_folder + file + '.csv', delimiter=',')
-    Sq_2D, D, q = direct_Sq_calculation(structure_to_calculate,domain,vector_step)
-    Sq,R = radial_average(Sq_2D,q)
-    
-    save_data(Sq_2D, q, D, Sq, R, folder_write_files, file)
-
 def plot_Sq_2D (folder_read, file, edge, x_axis = 'qD', save_plot = False, remove_center = False, remove_single_center = False, 
                 folder_write ='', log_scale = False, max_value = 100):
 
@@ -317,7 +216,7 @@ def vector_selection(array, axis_selection):
     
 def plot_Sq_1D(folder_read, file, labels, edges, x_axis = 'qD', save_plot = False, folder_write ='', log_scale = False, mult_plot=False, moving_average = False, n_ave = 3, y_max = 100):
     
-    figure(num=None, figsize=(18, 10), dpi=100, facecolor='w', edgecolor='k')
+    figure(num=None, figsize=(15, 10), dpi=100, facecolor='w', edgecolor='k')
     
     markers_array = np.asarray(["v", "o", "^", "s", "<", "x", ">","v", "o", "^", "s", "<", "x", ">"])
     for count, Sq_and_array in enumerate(file):
@@ -345,7 +244,7 @@ def plot_Sq_1D(folder_read, file, labels, edges, x_axis = 'qD', save_plot = Fals
 
 
         plt.plot(vector,Sq, marker = markers_array[count], ms=6, lw=2, label= labels[count])
-        plt.rc('legend', fontsize=15)
+        plt.rc('legend', fontsize=20)
         plt.rc('axes', titlesize=30)     
         plt.rc('axes', labelsize=30) 
         plt.rc('xtick', labelsize=30)   
@@ -355,17 +254,16 @@ def plot_Sq_1D(folder_read, file, labels, edges, x_axis = 'qD', save_plot = Fals
         plt.yscale("log")
     
     if x_axis == 'q':
-        plt.xlabel('q (m\u207B\u00B9)')
+        plt.xlabel('q (m\u207B\u00B9)', fontsize=35)
     
     elif x_axis == 'qD':
-        plt.xlabel('q (m\u207B\u00B9)')
+        plt.xlabel('q (m\u207B\u00B9)', fontsize=35)
         
     elif x_axis == 'xf':
-        plt.xlabel('x(micron)')
+        plt.xlabel('x(micron)', fontsize=35)
     
-    plt.ylabel('S(q)')
+    plt.ylabel('S(q)', fontsize=35)
     plt.axvline(x=2.19e6, color='k', lw = 2, linestyle='dashed')
-    plt.axvline(x=2.22e7, color='k', lw = 2, linestyle='dashed')
     plt.axvline(x=1.57e7, color='k', lw = 2, linestyle='dashed')
     plt.axhline(y=0.05, color='g', lw = 2)
     plt.axhline(y=0.1, color='b', lw = 2)
