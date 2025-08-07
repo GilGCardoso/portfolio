@@ -1,51 +1,92 @@
     # -*- coding: utf-8 -*-
 """
+Structure Factor Analysis for Optical Simulations
+
+This module provides computation methods of structure factors for non-periodic particle arrangements, 
+with targeted application at for non-periodic metasurfaces. The methods can be generalised for the interaction of
+asemblies of materials (particles, atoms, etc) with light.
+
+Key Features:
+- Memory-adaptive algorithms (iterative, matrix, matrix-by-parts)
+- Handles 20k-40k particles efficiently
+- 2D visualization and radial averaging
+
 Created on Fri May 15 12:06:43 2020
 
-@author: Gil
+@author: Gil Cardoso
 """
 
 import matplotlib
-import cupy as np
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import figure
 from scipy.spatial import cKDTree
 import psutil
 import socket
 
-def get_calculation_parameters(structure):
-    """return the parameters that are necessary for the calculation
-    N_points : The amount of points in the structure
-    d_first_neighbours : The average distance between first neighbours"""
-    
-    N_points = len(structure)
-    tree = cKDTree(structure)  # create tree of closest neighbours
-    d, k = tree.query(structure,k=2)
-    d_first_neighbours = np.average(d[:,1])
-    
-    return d_first_neighbours, N_points
-    
-def generate_vectors(structure, domain, vector_step, particule_distance): 
-    """Generates the vector used for the calculation of the structure factor.
-    distances_x, distances_y : vectors that contains the distances between all points along the x anf y axis respectivly
-    scat_vector : the scatterring vector used for the calculation"""
-    
-    coord_x = structure[:,0]
-    coord_y = structure[:,1]
-   
-    #create distance array for x an y   
-    coord_x_ = coord_x.reshape(len(coord_x),1)
-    distances_x = (coord_x - coord_x_).reshape(1,len(coord_x)**2)
+class StructureFactorCalculation:
+
+    def __init__(self, memory_fraction: float = 2/3):
+        """
+        Initialize the calculator.
         
-    coord_y_ = coord_y.reshape(len(coord_y),1)
-    distances_y= (coord_y - coord_y_).reshape(1,len(coord_y)**2)
+        Args:
+            memory_fraction: Fraction of available memory to use (default: 2/3)
+        """
+        self.memory_fraction = ∏
 
-    #set q vector
-    border = domain/particule_distance;
-    step = vector_step/particule_distance;
-    scat_vector = np.arange(0,border,step)
+    def get_calculation_parameters(self, structure: np.ndarray) -> Tuple[float, int]:
+        """Gets key from structure necessary for the calculation
 
-    return distances_x, distances_y, scat_vector
+        Args:
+        structure: Array of particle positions, shape (N, 2)   
+        
+        Returns:
+        N_points : The amount of points in the structure
+        d_first_neighbours : The average distance between first neighbours"""
+        
+        N_points = len(structure)
+        tree = cKDTree(structure)  # create tree of closest neighbours
+        d, k = tree.query(structure,k=2)
+        d_first_neighbours = np.average(d[:,1])
+        
+        logger.info(f"Structure analysis: {n_points} particles, "
+                   f"avg neighbor distance: {d_first_neighbors:.6f}")
+
+        return d_first_neighbours, N_points
+    
+    def generate_vectors(self, structure: np.ndarray, domain: float, 
+                                    vector_step: float, particle_distance: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        
+        """Generates the arrays of particle distance and the scattering vector necessary for the calculation of the structure factor.
+        Args:
+            structure: Particle positions array, shape (N, 2)
+            domain: Maximum q-vector magnitude in units of particle_distance
+            vector_step: Step size for q-vector grid
+            particle_distance: Characteristic length scale for normalization
+            
+        Returns:
+            tuple: (x_distances, y_distances, q_vector_grid)
+                - x_distances: All pairwise x-distances, shape (1, N²)
+                - y_distances: All pairwise y-distances, shape (1, N²)  
+                - q_vector_grid: 1D array of q-values for calculation"""
+        
+        coord_x = structure[:,0]
+        coord_y = structure[:,1]
+    
+        #create distance array for x an y   
+        coord_x_ = coord_x.reshape(len(coord_x),1)
+        distances_x = (coord_x - coord_x_).reshape(1,len(coord_x)**2)
+            
+        coord_y_ = coord_y.reshape(len(coord_y),1)
+        distances_y= (coord_y - coord_y_).reshape(1,len(coord_y)**2)
+
+        #set q vector
+        border = domain/particule_distance;
+        step = vector_step/particule_distance;
+        scat_vector = np.arange(0,border,step)
+
+        return distances_x, distances_y, scat_vector
 
 def select_calculation_method(vector,q):
     """Select the calculation method depeding on memory of the computer, the maximum memory is half of the memory of the pc"""
