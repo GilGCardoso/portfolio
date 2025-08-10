@@ -25,7 +25,6 @@ from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 import psutil
-import socket
 import logging
 import os
 import h5py
@@ -119,8 +118,8 @@ class StructureFactorCalculator:
 
     def select_calculation_method(self, vector: np.ndarray, q: np.ndarray) -> str:
         """Select the calculation method depeding on memory of the computer, the maximum memory is half of the memory of the pc"""
-        max_size_array = (2/3)*(psutil.virtual_memory().total/vector.itemsize)
-        
+        max_size_array = self.memory_fraction*(psutil.virtual_memory().total/vector.itemsize)
+
         if max_size_array < np.size(vector,axis=1)*len(q):
             selector = "iterative"
         
@@ -152,7 +151,7 @@ class StructureFactorCalculator:
     def iterative_method(self, d_x: np.ndarray, d_y: np.ndarray, q: np.ndarray, N: int) -> np.ndarray:
         structure_factor = np.zeros((len(q), len(q)), dtype=self.dtype)
         for a in range(len(q)):
-            print(str(a/len(q)*100)+"%")
+            logger.info("S(q) progress: %d/%d (%.1f%%)", a+1, len(q), 100*(a+1)/len(q))
             for b in range(len(q)):
                 structure_factor[a,b] = (1/N)*np.sum(np.exp(1j*(q[a]*d_x + q[b]*d_y)))
         return structure_factor
@@ -195,7 +194,7 @@ class StructureFactorCalculator:
         structure_factor = np.zeros((q_length, q_length), dtype=self.dtype)
 
         # Determine maximum rows per block based on available memory
-        max_size_array = (2 / 3) * (psutil.virtual_memory().total / m_x.itemsize)
+        max_size_array = self.memory_fraction * (psutil.virtual_memory().total / m_x.itemsize)
         rows_total = np.ma.size(m_y, axis=0)
         cols = np.ma.size(m_y, axis=1)
         max_dim = int(max_size_array / (cols * q_length))
@@ -214,8 +213,7 @@ class StructureFactorCalculator:
             structure_factor[start:end, :] = (1 / N) * np.sum(
                 np.cos(m_x + m_y[start:end, :]), axis=1
             )
-            progress = (1 - ((rows_total - end) / rows_total)) * 100
-            print(f"{progress}%")
+            logger.info("S(q) progress: %d/%d (%.1f%%)", end, rows_total, 100*end/rows_total)
             count += 1
 
         # Final chunk
@@ -503,9 +501,9 @@ class StructureFactorCalculator:
         - save_json (bool, optional): Save JSON metadata (default True).
         - save_dat (bool, optional): Also save legacy .dat files (default False).
         """
-        
-        print(f"Processing file: {filename}")
-        
+
+        logger.info(f"Processing file: {filename}")
+
         # Load structural data from CSV
         filepath = os.path.join(read_folder, f"{filename}.csv")
         structure = np.genfromtxt(filepath, delimiter=',').astype(self.dtype)
