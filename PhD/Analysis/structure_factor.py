@@ -49,8 +49,9 @@ class StructureFactorCalculator:
         
         Args:
             memory_fraction: Fraction of available memory to use (default: 2/3)
+            dtype: Data type for calculations (default: np.float32)
         """
-        self.memory_fraction = 2/3          # unchanged behavior
+        self.memory_fraction = memory_fraction          # unchanged behavior
         self.dtype = dtype                  # new: controls numeric precision
 
     # --- Input & geometry helpers ---
@@ -229,7 +230,7 @@ class StructureFactorCalculator:
         return structure_factor
 
     # --- High-level orchestration ---
-    def direct_Sq_calculation(self, structure: np.ndarray, domain: float, vector_step: float, erase_center: bool = False, full_plane: bool = False) -> Tuple[np.ndarray, float, np.ndarray]:
+    def direct_Sq_calculation(self, structure: np.ndarray, domain: float, vector_step: float, full_plane: bool = False) -> Tuple[np.ndarray, float, np.ndarray]:
         """
         Compute the 2D structure factor S(qx, qy) using a memory‑adaptive method.
 
@@ -247,8 +248,6 @@ class StructureFactorCalculator:
             Maximum extent used to generate the q-grid (passed to `generate_vectors`).
         vector_step : float
             Step size for the q-grid (passed to `generate_vectors`).
-        erase_center : bool, optional
-            If True, remove the central peak after computation using `remove_center_2D`.
         full_plane : bool, optional
             If True, q-vector covers symmetric range (full qx–qy plane); if False, first quadrant only.
 
@@ -279,9 +278,6 @@ class StructureFactorCalculator:
 
         else:
             raise ValueError(f"Unknown method selected: {method}")
-
-        if erase_center:
-            Sq_2D = self.remove_center_2D(Sq_2D, q, D)
 
         return Sq_2D, D, q
 
@@ -544,34 +540,27 @@ class StructureFactorVisualizer:
         return axis
 
     # --- Plotting: 2D structure factor ---
-    def plot_Sq_2D(self, data_folder: str, filename: str, edge: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, remove_center: bool = False, remove_single_center: bool = False,
-                   folder_write: str = '', log_scale: bool = False, *, auto_contrast: bool = False, vmin: Optional[float] = None, vmax: Optional[float] = None, cmap: str = 'jet', use_imshow: bool = False, show: bool = True) -> Tuple[Figure, Axes]:
+    def plot_Sq_2D(self, data_folder: str, filename: str, plot_range: Sequence[float], coordinate_system: str = 'qD', save_plot: bool = False, output_folder: str = '', log_scale: bool = False,
+                   auto_contrast: bool = False, vmin: Optional[float] = None, vmax: Optional[float] = None, cmap: str = 'jet', show: bool = False) -> Tuple[Figure, Axes]:
         # Load from HDF5 produced by save_data
         with h5py.File(os.path.join(data_folder, filename + '.h5'), 'r') as f:
             Sq2D_and_arrays = f['Sq_2D_with_q_columns'][:]
 
         # Separate grid and axis vector (last two columns are q and qD)
         Sq_2D = Sq2D_and_arrays[:, :-2]
-        if x_axis == 'q':
+        if coordinate_system == 'q':
             vector = Sq2D_and_arrays[:, -2] * 1e6
-        elif x_axis == 'qD':
+        elif coordinate_system == 'qD':
             vector = Sq2D_and_arrays[:, -1]
-        elif x_axis == 'xf':
+        elif coordinate_system == 'xf':
             vector = Sq2D_and_arrays[:, -1] / 1.033e2
         else:
             # Fallback to qD if unknown axis
             vector = Sq2D_and_arrays[:, -1]
 
-        # Optional central masking using edge[0] as radius (same behavior)
-        if remove_center and edge is not None:
-            thr = abs(edge[0]) if isinstance(edge, (list, tuple, np.ndarray)) else float(edge)
-            X, Y = np.meshgrid(vector, vector)
-            R = np.hypot(X, Y)
-            if np.any(R < thr):
-                Sq_2D[R < thr] = np.nanmin(Sq_2D)
 
         # Crop to requested window (symmetric around 0 with edge[1])
-        mask_1d = (vector > -edge[1]) & (vector < edge[1])
+        mask_1d = (vector > -plot_range[1]) & (vector < plot_range[1])
         vector = vector[mask_1d]
         mask_2d = np.logical_and.outer(mask_1d, mask_1d)
         Sq_2D = Sq_2D[mask_2d].reshape((len(vector), len(vector)))
@@ -586,9 +575,9 @@ class StructureFactorVisualizer:
 
         # Plot
         fig = figure(num=None, figsize=(10, 10), dpi=100, facecolor='w', edgecolor='k')
-        ax = plt.axes(xlim=edge, ylim=edge, autoscale_on=True)
+        ax = plt.axes(xlim=plot_range, ylim=plot_range, autoscale_on=True)
 
-        # Always use imshow for plotting
+        # Imshow for plotting
         extent = [vector.min(), vector.max(), vector.min(), vector.max()]
         if log_scale:
             from matplotlib.colors import LogNorm
@@ -604,10 +593,10 @@ class StructureFactorVisualizer:
             )
 
         # Labels (q and qD use identical labels in current code)
-        if x_axis in ('q', 'qD'):
+        if coordinate_system in ('q', 'qD'):
             plt.xlabel('qx (m\u207B\u00B9)')
             plt.ylabel('qy (m\u207B\u00B9)')
-        elif x_axis == 'xf':
+        elif coordinate_system == 'xf':
             plt.xlabel('x(micron)')
             plt.ylabel('y(micron)')
 
@@ -625,16 +614,16 @@ class StructureFactorVisualizer:
         # Optional save (filenames unchanged)
         if save_plot:
             if log_scale:
-                plt.savefig(folder_write + '/2D_Sq_' + filename + "_edge_" + str(edge) + '_log_scale.png')
+                plt.savefig(output_folder + '/2D_Sq_' + filename + "_range_" + str(plot_range) + '_log_scale.svg')
             else:
-                plt.savefig(folder_write + '/2D_Sq_' + filename + "_edges_" + str(edge) + '.svg')
+                plt.savefig(output_folder + '/2D_Sq_' + filename + "_range_" + str(plot_range) + '.svg')
 
         if show:
             plt.show()
         return fig, ax
 
     # --- Plotting: 1D structure factor ---
-    def plot_Sq_1D(self, data_folder: str, filename: Sequence[str], labels: Sequence[str], edges: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, folder_write: str = '', log_scale: bool = False, mult_plot: bool = False, moving_average: bool = False, n_ave: int = 3, y_max: float = 100, *, auto_ylim: bool = False, show: bool = True) -> Tuple[Figure, Axes]:
+    def plot_Sq_1D(self, data_folder: str, filename: Sequence[str], labels: Sequence[str], plot_range: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, output_folder: str = '', log_scale: bool = False, mult_plot: bool = False, moving_average: bool = False, n_ave: int = 3, y_max: float = 100, *, auto_ylim: bool = False, show: bool = True) -> Tuple[Figure, Axes]:
         # Figure and axis
         fig = figure(num=None, figsize=(18, 10), dpi=100, facecolor='w', edgecolor='k')
         ax = plt.gca()
@@ -668,7 +657,7 @@ class StructureFactorVisualizer:
 
             # Axis selection and cropping
             vector = self.vector_selection(Sq_and_arrays, x_axis)
-            mask = (edges[0] < vector) & (vector < edges[1])
+            mask = (plot_range[0] < vector) & (vector < plot_range[1])
             vector = vector[mask]
             Sq = Sq[mask]
 
@@ -706,7 +695,7 @@ class StructureFactorVisualizer:
                     ax.set_ylim(0, float(np.nanmax(ydata) * 1.05))
 
         # x-limits
-        ax.set_xlim(edges)
+        ax.set_xlim(plot_range)
 
         ax.legend()
         plt.tight_layout()
@@ -714,7 +703,7 @@ class StructureFactorVisualizer:
         # Optional save
         if save_plot:
             plt.tight_layout()
-            plt.savefig(folder_write + 'Sq_' + 'multiple_filtered_areas' + "_edges_" + str(edges[0]) + '_' + str(edges[1]) + '.svg')
+            plt.savefig(output_folder + 'Sq_' + 'multiple_filtered_areas' + "_range_" + str(plot_range[0]) + '_' + str(plot_range[1]) + '.svg')
 
         if show:
             plt.show()
