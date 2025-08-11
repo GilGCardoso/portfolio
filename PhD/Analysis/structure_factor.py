@@ -25,6 +25,7 @@ from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 import psutil
+import socket
 import logging
 import os
 import h5py
@@ -39,7 +40,7 @@ logging.basicConfig(
 )
 
 # --- StructureFactorCalculator ---
-class StructureFactorCalculator:
+class StructureFactorCalculator_cpu:
 
     # --- Initialization ---
     def __init__(self, memory_fraction: float = 2/3, dtype: np.dtype = np.float32) -> None:
@@ -48,10 +49,10 @@ class StructureFactorCalculator:
         
         Args:
             memory_fraction: Fraction of available memory to use (default: 2/3)
-            dtype: Data type for calculations (default: np.float32)
         """
-        self.memory_fraction = memory_fraction          # unchanged behavior
+        self.memory_fraction = memory_fraction         # unchanged behavior
         self.dtype = dtype                  # new: controls numeric precision
+
 
     # --- Input & geometry helpers ---
     def get_calculation_parameters(self, structure: np.ndarray) -> Tuple[float, int]:
@@ -118,8 +119,8 @@ class StructureFactorCalculator:
 
     def select_calculation_method(self, vector: np.ndarray, q: np.ndarray) -> str:
         """Select the calculation method depeding on memory of the computer, the maximum memory is half of the memory of the pc"""
-        max_size_array = self.memory_fraction*(psutil.virtual_memory().total/vector.itemsize)
-
+        max_size_array = memory_fraction*(psutil.virtual_memory().total/vector.itemsize)
+        
         if max_size_array < np.size(vector,axis=1)*len(q):
             selector = "iterative"
         
@@ -151,7 +152,7 @@ class StructureFactorCalculator:
     def iterative_method(self, d_x: np.ndarray, d_y: np.ndarray, q: np.ndarray, N: int) -> np.ndarray:
         structure_factor = np.zeros((len(q), len(q)), dtype=self.dtype)
         for a in range(len(q)):
-            logger.info("S(q) progress: %d/%d (%.1f%%)", a+1, len(q), 100*(a+1)/len(q))
+            print(str(a/len(q)*100)+"%")
             for b in range(len(q)):
                 structure_factor[a,b] = (1/N)*np.sum(np.exp(1j*(q[a]*d_x + q[b]*d_y)))
         return structure_factor
@@ -194,7 +195,7 @@ class StructureFactorCalculator:
         structure_factor = np.zeros((q_length, q_length), dtype=self.dtype)
 
         # Determine maximum rows per block based on available memory
-        max_size_array = self.memory_fraction * (psutil.virtual_memory().total / m_x.itemsize)
+        max_size_array = (2 / 3) * (psutil.virtual_memory().total / m_x.itemsize)
         rows_total = np.ma.size(m_y, axis=0)
         cols = np.ma.size(m_y, axis=1)
         max_dim = int(max_size_array / (cols * q_length))
@@ -213,7 +214,8 @@ class StructureFactorCalculator:
             structure_factor[start:end, :] = (1 / N) * np.sum(
                 np.cos(m_x + m_y[start:end, :]), axis=1
             )
-            logger.info("S(q) progress: %d/%d (%.1f%%)", end, rows_total, 100*end/rows_total)
+            progress = (1 - ((rows_total - end) / rows_total)) * 100
+            print(f"{progress}%")
             count += 1
 
         # Final chunk
@@ -278,60 +280,10 @@ class StructureFactorCalculator:
             raise ValueError(f"Unknown method selected: {method}")
 
         return Sq_2D, D, q
+    
+    
 
     # --- Post-processing ---
-    def remove_center_2D(self, structure_factor_2D: np.ndarray, qD: np.ndarray, vector_end: float) -> np.ndarray:
-        """
-        Replace values within a central circular region of a 2D structure factor.
-
-        Parameters:
-        - structure_factor_2D (np.ndarray): 2D structure factor grid.
-        - qD (np.ndarray): 1D q-vector values used to build the grid (same for x and y).
-        - vector_end (float): Radius threshold; values with sqrt(qx^2 + qy^2) < vector_end are replaced.
-
-        Returns:
-        - np.ndarray: Modified 2D structure factor with central region set to the global minimum.
-        """
-        x_q, y_q = np.meshgrid(qD, qD)
-        radius = np.hypot(x_q, y_q)
-        mask = radius < vector_end
-        min_val = np.min(structure_factor_2D)
-        structure_factor_2D[mask] = min_val
-
-        return structure_factor_2D
-
-    def remove_center_1D(self, structure_factor_1D: np.ndarray, qD: np.ndarray) -> np.ndarray:
-        """
-        Zero out the central region of a 1D structure factor.
-
-        Parameters:
-        - structure_factor_1D (np.ndarray): 1D structure factor array.
-        - qD (np.ndarray): Corresponding q-vector values.
-
-        Returns:
-        - np.ndarray: Modified structure factor with qD < 1 set to zero.
-        """
-        mask = qD < 1
-        structure_factor_1D[mask] = 0
-
-        return structure_factor_1D
-
-    def remove_single_at_center(self, structure_factor: np.ndarray) -> np.ndarray:
-        """
-        Set the maximum value in the structure factor array to zero.
-        
-        Parameters:
-        - structure_factor (np.ndarray): Input structure factor array.
-        
-        Returns:
-        - np.ndarray: Modified structure factor with max value replaced by zero.
-        """
-        max_val = np.nanmax(structure_factor)
-        max_positions = np.where(structure_factor == max_val)
-        structure_factor[max_positions] = 0
-
-        return structure_factor
-
     def radial_average(self, Sq: np.ndarray, qD: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute the radial average of a 2D structure factor array.
@@ -474,7 +426,7 @@ class StructureFactorCalculator:
                 header='Rows: Sq, q, q·D.'
             )
         
-    def calculate_and_save(
+    def calculate_structure_factor_and_save(
         self, 
         read_folder: str, 
         filename: str, 
@@ -501,9 +453,9 @@ class StructureFactorCalculator:
         - save_json (bool, optional): Save JSON metadata (default True).
         - save_dat (bool, optional): Also save legacy .dat files (default False).
         """
-
-        logger.info(f"Processing file: {filename}")
-
+        
+        print(f"Processing file: {filename}")
+        
         # Load structural data from CSV
         filepath = os.path.join(read_folder, f"{filename}.csv")
         structure = np.genfromtxt(filepath, delimiter=',').astype(self.dtype)
@@ -538,27 +490,26 @@ class StructureFactorVisualizer:
         return axis
 
     # --- Plotting: 2D structure factor ---
-    def plot_Sq_2D(self, data_folder: str, filename: str, plot_range: Sequence[float], coordinate_system: str = 'qD', save_plot: bool = False, output_folder: str = '', log_scale: bool = False,
-                   auto_contrast: bool = False, vmin: Optional[float] = None, vmax: Optional[float] = None, cmap: str = 'jet', show: bool = False) -> Tuple[Figure, Axes]:
+    def plot_Sq_2D(self, data_folder: str, filename: str, edge: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, folder_write: str = '', log_scale: bool = False, *, 
+                   auto_contrast: bool = False, vmin: Optional[float] = None, vmax: Optional[float] = None, cmap: str = 'jet', show: bool = True) -> Tuple[Figure, Axes]:
         # Load from HDF5 produced by save_data
         with h5py.File(os.path.join(data_folder, filename + '.h5'), 'r') as f:
             Sq2D_and_arrays = f['Sq_2D_with_q_columns'][:]
 
         # Separate grid and axis vector (last two columns are q and qD)
         Sq_2D = Sq2D_and_arrays[:, :-2]
-        if coordinate_system == 'q':
+        if x_axis == 'q':
             vector = Sq2D_and_arrays[:, -2] * 1e6
-        elif coordinate_system == 'qD':
+        elif x_axis == 'qD':
             vector = Sq2D_and_arrays[:, -1]
-        elif coordinate_system == 'xf':
+        elif x_axis == 'xf':
             vector = Sq2D_and_arrays[:, -1] / 1.033e2
         else:
             # Fallback to qD if unknown axis
             vector = Sq2D_and_arrays[:, -1]
 
-
         # Crop to requested window (symmetric around 0 with edge[1])
-        mask_1d = (vector > -plot_range[1]) & (vector < plot_range[1])
+        mask_1d = (vector > -edge[1]) & (vector < edge[1])
         vector = vector[mask_1d]
         mask_2d = np.logical_and.outer(mask_1d, mask_1d)
         Sq_2D = Sq_2D[mask_2d].reshape((len(vector), len(vector)))
@@ -573,9 +524,9 @@ class StructureFactorVisualizer:
 
         # Plot
         fig = figure(num=None, figsize=(10, 10), dpi=100, facecolor='w', edgecolor='k')
-        ax = plt.axes(xlim=plot_range, ylim=plot_range, autoscale_on=True)
+        ax = plt.axes(xlim=edge, ylim=edge, autoscale_on=True)
 
-        # Imshow for plotting
+        # Always use imshow for plotting
         extent = [vector.min(), vector.max(), vector.min(), vector.max()]
         if log_scale:
             from matplotlib.colors import LogNorm
@@ -591,10 +542,10 @@ class StructureFactorVisualizer:
             )
 
         # Labels (q and qD use identical labels in current code)
-        if coordinate_system in ('q', 'qD'):
+        if x_axis in ('q', 'qD'):
             plt.xlabel('qx (m\u207B\u00B9)')
             plt.ylabel('qy (m\u207B\u00B9)')
-        elif coordinate_system == 'xf':
+        elif x_axis == 'xf':
             plt.xlabel('x(micron)')
             plt.ylabel('y(micron)')
 
@@ -612,16 +563,16 @@ class StructureFactorVisualizer:
         # Optional save (filenames unchanged)
         if save_plot:
             if log_scale:
-                plt.savefig(output_folder + '/2D_Sq_' + filename + "_range_" + str(plot_range) + '_log_scale.svg')
+                plt.savefig(folder_write + '/2D_Sq_' + filename + "_edge_" + str(edge) + '_log_scale.png')
             else:
-                plt.savefig(output_folder + '/2D_Sq_' + filename + "_range_" + str(plot_range) + '.svg')
+                plt.savefig(folder_write + '/2D_Sq_' + filename + "_edges_" + str(edge) + '.svg')
 
         if show:
             plt.show()
         return fig, ax
 
     # --- Plotting: 1D structure factor ---
-    def plot_Sq_1D(self, data_folder: str, filename: Sequence[str], labels: Sequence[str], plot_range: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, output_folder: str = '', log_scale: bool = False, mult_plot: bool = False, moving_average: bool = False, n_ave: int = 3, y_max: float = 100, *, auto_ylim: bool = False, show: bool = True) -> Tuple[Figure, Axes]:
+    def plot_Sq_1D(self, data_folder: str, filename: Sequence[str], labels: Sequence[str], edges: Sequence[float], x_axis: str = 'qD', save_plot: bool = False, folder_write: str = '', log_scale: bool = False, mult_plot: bool = False, moving_average: bool = False, n_ave: int = 3, y_max: float = 100, *, auto_ylim: bool = False, show: bool = True) -> Tuple[Figure, Axes]:
         # Figure and axis
         fig = figure(num=None, figsize=(18, 10), dpi=100, facecolor='w', edgecolor='k')
         ax = plt.gca()
@@ -655,7 +606,7 @@ class StructureFactorVisualizer:
 
             # Axis selection and cropping
             vector = self.vector_selection(Sq_and_arrays, x_axis)
-            mask = (plot_range[0] < vector) & (vector < plot_range[1])
+            mask = (edges[0] < vector) & (vector < edges[1])
             vector = vector[mask]
             Sq = Sq[mask]
 
@@ -693,7 +644,7 @@ class StructureFactorVisualizer:
                     ax.set_ylim(0, float(np.nanmax(ydata) * 1.05))
 
         # x-limits
-        ax.set_xlim(plot_range)
+        ax.set_xlim(edges)
 
         ax.legend()
         plt.tight_layout()
@@ -701,7 +652,7 @@ class StructureFactorVisualizer:
         # Optional save
         if save_plot:
             plt.tight_layout()
-            plt.savefig(output_folder + 'Sq_' + 'multiple_filtered_areas' + "_range_" + str(plot_range[0]) + '_' + str(plot_range[1]) + '.svg')
+            plt.savefig(folder_write + 'Sq_' + 'multiple_filtered_areas' + "_edges_" + str(edges[0]) + '_' + str(edges[1]) + '.svg')
 
         if show:
             plt.show()
