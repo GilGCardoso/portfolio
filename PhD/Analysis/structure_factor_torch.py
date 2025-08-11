@@ -22,15 +22,20 @@ Created on Fri May 15 12:06:43 2023
 @author: Gil Cardoso
 """
 
-import matplotlib
+import os
+import sys
+import logging
+from typing import Tuple
 import torch
 import torch.cuda
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.pyplot import figure
 from scipy.spatial import cKDTree
-import psutil
-import socket
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 parent_dir = os.path.abspath(os.path.join(os.getcwd(), '..'))
 sys.path.append(parent_dir)
@@ -50,7 +55,7 @@ class StructureFactorCalculator_gpu:
         """Initialize the calculator and check GPU availability."""
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if torch.cuda.is_available():
-            print(f"GPU available: {torch.cuda.get_device_name()}")
+           logger.info("GPU available: %s", torch.cuda.get_device_name())
         else:
             print("GPU not available, using CPU")
     
@@ -92,7 +97,7 @@ class StructureFactorCalculator_gpu:
         logger.info("Processing file: %s", filename)
 
         # Load particle positions from CSV file
-        structure_to_calculate = np.genfromtxt(read_folder + file + '.csv', delimiter=',')
+        structure_to_calculate = np.genfromtxt(read_folder + filename + '.csv', delimiter=',')
         
         # Convert numpy array to PyTorch tensor for GPU computation
         structure_to_calculate_tensor = torch.from_numpy(structure_to_calculate)
@@ -101,7 +106,7 @@ class StructureFactorCalculator_gpu:
         D, N = self.get_calculation_parameters(structure_to_calculate)
         
         # Generate distance vectors and q-space sampling grid
-        d_x, d_y, q = self.generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, D)
+        d_x, d_y, q = self.generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, D, full_plane=full_plane)
         
         # Move all tensors to GPU for acceleration
         d_x = d_x.cuda()
@@ -110,7 +115,7 @@ class StructureFactorCalculator_gpu:
         N = torch.tensor(N, dtype=torch.float).cuda()
 
         # Display q-range for user information
-        print(f"Q-range: {q[0]*1e6:.2e} to {q[-1]*1e6:.2e} (physical units)")
+        logger.info("Q-range: %s to %s (physical units)", q[0]*1e6, q[-1]*1e6)
             
         # Initialize result tensor on GPU
         structure_factor = torch.zeros((len(q),len(q)))
@@ -130,17 +135,24 @@ class StructureFactorCalculator_gpu:
         q = q.cpu().numpy()
 
         # Compute radial average to get 1D structure factor S(|q|)
-        Sq, R = StructureFactorCalculator_cpu.radial_average(Sq_2D, q)
+        Sq, R = StructureFactorCalculator_cpu.radial_average(self, Sq_2D, q)
 
         # Save both 2D and 1D results with metadata
-        StructureFactorCalculator_cpu.save_data(
+        StructureFactorCalculator_cpu.save_data(self,
             Sq_2D, q, D, Sq, R, save_folder, filename,
             save_hdf5=save_hdf5,
             save_json=save_json,
             save_dat=save_dat
             )
 
-    def generate_vectors(self, structure, domain, vector_step, particle_distance): 
+    def generate_vectors(        
+        self,
+        structure: np.ndarray,
+        domain: float,
+        vector_step: float,
+        particle_distance: float,
+        full_plane: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Generate distance arrays and q-vectors for structure factor calculation.
         
@@ -174,9 +186,15 @@ class StructureFactorCalculator_gpu:
         # Normalization by particle_distance makes results scale-invariant
         border = domain/particle_distance
         step = vector_step/particle_distance
-        scattering_vector = torch.arange(0, border, step)
 
-        return distances_x, distances_y, scattering_vector
+        if full_plane:
+            # symmetric range covering the full qx–qy plane
+            scat_vector = torch.arange(-border, border, step)
+        else:
+            # original behavior: first quadrant only
+            scat_vector = torch.arange(0, border, step)
+
+        return distances_x, distances_y, scat_vector
 
     def get_calculation_parameters(self, structure):
         """

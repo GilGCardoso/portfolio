@@ -55,7 +55,7 @@ def compute_structure_factor_auto( *args, memory_fraction: float = 2/3, backend:
             return GPU_calc.calculate_structure_factor_and_save(*args, **kwargs)
 
         except Exception as e:
-            logger.warning("GPU path failed (%s); falling back to CPU.", e)
+            logger.warning("GPU path failed (%s)", e)
 
     else:
         from structure_factor import StructureFactorCalculator_cpu
