@@ -54,7 +54,18 @@ class StructureFactorCalculator_gpu:
         else:
             print("GPU not available, using CPU")
     
-    def calculate_structure_factor_and_save(self, read_folder, file, range_calculation, vector_step, save_folder):
+    def calculate_structure_factor_and_save(self, 
+        read_folder: str, 
+        filename: str, 
+        range_calculation: float, 
+        vector_step: float, 
+        save_folder: str = '',
+        *,
+        full_plane: bool = False,
+        save_hdf5: bool = True,
+        save_json: bool = True,
+        save_dat: bool = False
+    ) -> None:
         """
         Main calculation workflow for structure factor analysis.
         
@@ -77,6 +88,9 @@ class StructureFactorCalculator_gpu:
             - Memory usage scales as O(N²) where N is number of particles
             - Supports up to 40k particles on modern GPUs
         """
+
+        logger.info("Processing file: %s", filename)
+
         # Load particle positions from CSV file
         structure_to_calculate = np.genfromtxt(read_folder + file + '.csv', delimiter=',')
         
@@ -103,21 +117,28 @@ class StructureFactorCalculator_gpu:
         
         # Double loop calculation: S(qx,qy) = (1/N) * Σ exp(i*(qx*dx + qy*dy))
         # This is the core structure factor calculation using discrete Fourier transform
-        for a in range(len(q)):
-            print(f"Progress: {a/len(q)*100:.1f}%")  # Progress indicator
+        for a in range(len(q)): 
             for b in range(len(q)):
                 # Calculate structure factor at each q-point using complex exponentials
-                structure_factor[a,b] = (1/N)*torch.sum(torch.exp(1j*(q[a]*d_x + q[b]*d_y)))  
+                structure_factor[a,b] = (1/N)*torch.sum(torch.exp(1j*(q[a]*d_x + q[b]*d_y))) 
+
+            progress = 100.0 * a / len(q)
+            logger.info("Progress: %.1f%% (%s/%d)", progress, a, len(q)) # Progress indicator
 
         # Transfer results back to CPU for post-processing and saving
-        structure_factor = structure_factor.cpu().numpy() 
+        Sq_2D = structure_factor.cpu().numpy() 
         q = q.cpu().numpy()
 
         # Compute radial average to get 1D structure factor S(|q|)
-        Sq, R = StructureFactorCalculator_cpu.radial_average(structure_factor, q)
+        Sq, R = StructureFactorCalculator_cpu.radial_average(Sq_2D, q)
 
         # Save both 2D and 1D results with metadata
-        StructureFactorCalculator_cpu.save_data(structure_factor, q, D, Sq, R, save_folder, file)
+        StructureFactorCalculator_cpu.save_data(
+            Sq_2D, q, D, Sq, R, save_folder, filename,
+            save_hdf5=save_hdf5,
+            save_json=save_json,
+            save_dat=save_dat
+            )
 
     def generate_vectors(self, structure, domain, vector_step, particle_distance): 
         """

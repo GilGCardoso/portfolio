@@ -1,3 +1,5 @@
+import os
+import sys
 import torch
 import logging
 
@@ -23,6 +25,8 @@ def _cuda_available() -> bool:
         try:
             name = torch.cuda.get_device_name()
         except Exception:
+            name = "CUDA device"
+
         logger.info("CUDA available: %s", name)
         props = torch.cuda.get_device_properties(torch.cuda.current_device())
         logger.info("GPU Memory: %.1f GB", props.total_memory / 1e9)
@@ -33,8 +37,8 @@ def _cuda_available() -> bool:
     return has_cuda
 
 
-def compute_structure_factor_auto(self, *args, backend: str = "auto", **kwargs):
-     """
+def compute_structure_factor_auto( *args, memory_fraction: float = 2/3, backend: str = "auto", **kwargs):
+    """
     Dispatch to GPU or CPU implementation based on availability.
     Args/kwargs are passed through to the selected implementation.
 
@@ -44,18 +48,19 @@ def compute_structure_factor_auto(self, *args, backend: str = "auto", **kwargs):
     use_gpu = (backend == "gpu") or (backend == "auto" and _cuda_available())
 
     if use_gpu:
-        from structure_factor_torch import StructureFactorCalculator_gpu
-        GPU_calc= StructureFactorCalculator_gpu()
+        try:   
+            from structure_factor_torch import StructureFactorCalculator_gpu
+            GPU_calc= StructureFactorCalculator_gpu()
 
-        return GPU_calc.calculate_structure_factor_and_save(*args, **kwargs)
+            return GPU_calc.calculate_structure_factor_and_save(*args, **kwargs)
 
-    except Exception as e:
-        logger.warning("GPU path failed (%s); falling back to CPU.", e)
+        except Exception as e:
+            logger.warning("GPU path failed (%s); falling back to CPU.", e)
 
     else:
         from structure_factor import StructureFactorCalculator_cpu
-            CPU_calc = StructureFactorCalculator()
-            return CPU_calc.calculate_structure_factor_and_save(*args, **kwargs)
+        CPU_calc = StructureFactorCalculator_cpu(memory_fraction = memory_fraction)
+        return CPU_calc.calculate_structure_factor_and_save(*args, **kwargs)
 
 
 
