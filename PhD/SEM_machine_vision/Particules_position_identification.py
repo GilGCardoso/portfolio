@@ -1,31 +1,43 @@
-    # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Created on Fri Nov  6 17:29:48 2020
 
 @author: Gil
 """
 
+import os
 import skimage
 import matplotlib
 import numpy as np
+import cv2
 import matplotlib.pyplot as plt
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 from skimage.color import rgb2gray
 from skimage.filters import threshold_sauvola, threshold_niblack
 from skimage.measure import label, regionprops, regionprops_table, find_contours
-from skimage.morphology import remove_small_holes, remove_small_holes, remove_small_objects, binary_closing, disk, binary_erosion, binary_dilation, dilation, area_closing
+from skimage.morphology import remove_small_holes, remove_small_objects, binary_closing, disk, binary_erosion, binary_dilation, dilation, area_closing
 from skimage.feature import canny
 from skimage.transform import hough_circle, hough_circle_peaks, hough_ellipse
 from scipy.spatial import cKDTree
 
 
-def fetch_file(folder, file, invert = False):    
+def fetch_file(folder, filename, invert = False):    
 
-    im = Image.open(folder + "/" + file)
+    path = os.path.join(folder, filename)
+    im = Image.open(path)
     pix = np.array(im)
-    img = rgb2gray(pix)
     
+    # Handle different channel layouts
+    if pix.ndim == 2:
+        # already grayscale
+        img = skimage.img_as_float(pix)
+    else:
+        # if RGBA, drop alpha
+        if pix.shape[-1] == 4:
+            pix = pix[..., :3]
+        img = rgb2gray(pix) 
+
     if invert:
         
         img = skimage.util.invert(img)
@@ -34,17 +46,27 @@ def fetch_file(folder, file, invert = False):
 
 
 def binary_conversion(img, treshold_adjustment, window_size = 15, delta_blur = 0, sigma_weight = 0.2):
-        
-    
-    f_img = cv2.blur(img, (delta_blur, delta_blur))
-    threshold = threshold_sauvola(f_img, window_size = window_size, k = sigma_weight)
-    binary_sauvola = f_img > threshold + treshold_adjustment
+
+    if img is None:
+        raise ValueError("Input image is None.")
+
+    ksize = int(delta_blur) if delta_blur is not None else 0
+    if ksize >= 2:
+        f_img = cv2.blur(img, (ksize, ksize))
+    else:
+        f_img = img
+
+    if window_size is None or int(window_size) < 3:
+        raise ValueError("window_size must be at least 3.")
+
+    threshold = threshold_sauvola(f_img, window_size=int(window_size), k=sigma_weight)
+    binary_sauvola = f_img > (threshold + treshold_adjustment)
 
     plt.figure(num=None, figsize=(18,12), dpi=100, facecolor='w', edgecolor='k')
     plt.imshow(binary_sauvola, cmap='gray')
     plt.axis('off')
     plt.show()
-    
+
     return binary_sauvola
 
 
@@ -98,7 +120,7 @@ def visualise_selected_particules(particules,img):
 
 def save_positions_array(filename, location, particule_positions, norm_factor):
 
-    np.savetxt(location + "/" + filename + '.csv',particule_positions[:,:2]*norm_factor, delimiter = ',') 
+    np.savetxt(os.path.join(location, filename + '.csv'), particule_positions[:, :2] * norm_factor, delimiter=',') 
     
 
 def detect_angle_orientation(particles, label):
@@ -108,8 +130,8 @@ def detect_angle_orientation(particles, label):
     d, k = particles_tree.query(particles,k=2)
     
     distance = (particles[k[:,1]] - particles)
-    
-    ratio = distance[:,1]/d[:,1]
+    den = np.where(d[:,1] == 0, np.finfo(float).eps, d[:,1])
+    ratio = np.clip(distance[:,1] / den, -1.0, 1.0)
     
     angles_degrees = np.arcsin(ratio) * 180/np.pi
     
@@ -139,34 +161,54 @@ def detect_angle_orientation(particles, label):
     
     return particles_direction, angles_degrees
 
-def detect_angle_variation(particles, angles,treshold):
-    
+def detect_angle_variation(particles, angles, treshold):
+    if len(particles) == 0:
+        return particles
+
     particles_tree = cKDTree(particles)
-    
-    d, k = particles_tree.query(particles,k=7)
-    
-    diff = abs(angles[k[:,1:]] - angles[:].reshape((len(angles),1)))
-    
-    num_small_diff = np.sum(np.logical_or(diff < treshold,diff > 60 - treshold), axis=1)
-    
+
+    k_neighbors = min(7, len(particles))
+    if k_neighbors <= 1:
+        return particles
+
+    d, k = particles_tree.query(particles, k=k_neighbors)
+
+    neighbor_idx = k[:, 1:] if k_neighbors > 1 else np.empty((len(particles), 0), dtype=int)
+    if neighbor_idx.shape[1] == 0:
+        return particles
+
+    diff = np.abs(angles[neighbor_idx] - angles.reshape((len(angles), 1)))
+
+    num_small_diff = np.sum(np.logical_or(diff < treshold, diff > 60 - treshold), axis=1)
+
     ordered_particules = particles[num_small_diff > 2]
 
-    
     return ordered_particules
 
 def detect_distance_variation(particles):
-    
+    if len(particles) <= 1:
+        return particles
+
     particles_tree = cKDTree(particles)
-    
-    d, k = particles_tree.query(particles,k=2)
-    
-    d_median = np.median(d[:,1])
+
+    d, k = particles_tree.query(particles, k=min(2, len(particles)))
+    if d.ndim != 2 or d.shape[1] < 2:
+        return particles
+
+    d_median = np.median(d[:, 1])
     print(d_median)
-    
-    d, k = particles_tree.query(particles,k=7)
-    
-    particle_dist_average = np.average(d[:,1:],axis=1)
-    
-    ordered_particles = particles[np.logical_and(particle_dist_average > 0.9*d_median,particle_dist_average < 1.1*d_median)]
-    
+
+    k2 = min(7, len(particles))
+    if k2 <= 1:
+        return particles
+
+    d, k = particles_tree.query(particles, k=k2)
+    if d.ndim != 2 or d.shape[1] < 2:
+        return particles
+
+    particle_dist_average = np.average(d[:, 1:], axis=1)
+
+    ordered_particles = particles[np.logical_and(particle_dist_average > 0.9 * d_median,
+                                                particle_dist_average < 1.1 * d_median)]
+
     return ordered_particles
