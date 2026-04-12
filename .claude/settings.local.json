@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:/Users/Gil/Documents/GitHub/portfolio/PhD\" -type f \\\\\\( -name \"*.py\" -o -name \"*.ipynb\" \\\\\\) -not -path \"*/.venv/*\" -not -path \"*/.claude/*\" -not -path \"*/archive/*\" -exec grep -h \"^import\\\\|^from\" {} \\\\;)"
+    ]
+  }
+}
