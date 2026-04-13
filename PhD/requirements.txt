@@ -6,3 +6,5 @@ scikit-image
 Pillow
 shapely
 opencv-python
+psutil
+tqdm

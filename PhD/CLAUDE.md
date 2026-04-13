@@ -60,9 +60,13 @@ archive/
 
 1. **`get_calculation_parameters`** — average nearest-neighbour distance D and particle count N via `cKDTree`.
 2. **`generate_vectors`** — pairwise distance arrays (d_x, d_y) and scattering vector q (normalised by D).
-3. **Vectorised calculation** — broadcasts `(n_q, 1, 1) × (1, n_q, 1) × (1, 1, n²)` tensors; evaluates S(q) = (1/N) Σ exp(i·q·Δr) on CUDA or CPU.
+3. **Adaptive calculation** — `_select_method` picks one of three tiers based on available memory (`psutil` on CPU, `torch.cuda.mem_get_info` on GPU) and tensor sizes:
+   - `matrix` — full broadcast `(nq, nq, N²)`, fastest when it fits.
+   - `matrix_by_parts` — chunks over qx rows; halves chunk on runtime OOM.
+   - `iterative` — per-cell loop for the tightest budgets.
+   Uses real `cos` (S(q) is real-valued) in float32. Safety factors: `_SAFETY_GPU=0.85`, `_SAFETY_CPU=0.5` (CPU is more conservative — `psutil.available` overstates usable RAM). `device='cpu'` or `'gpu'` is an explicit arg.
 4. **`radial_average`** — bins 2D S(q) into radial shells via `np.digitize`.
-5. **`save_data`** — writes both `.dat` files; stores `|S(q)|` for the complex result.
+5. **`save_data`** — writes both `.dat` files.
 
 ### Correlated disorder generation (`phd_tools/structure_gen.py`)
 

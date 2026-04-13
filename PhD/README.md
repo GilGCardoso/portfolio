@@ -7,6 +7,8 @@ Simulate optical properties of non-periodic structures using particle positions 
 - **Algorithm**: Discretized Fourier Transform for structure factor calculation
 - **Performance**: Dual implementation (CPU/GPU) for optimal resource utilization
 - **Scalability**: Memory-efficient processing up to 40k particles on 32GB RAM
+- **Adaptive memory management**: automatic selection between three compute tiers (full-matrix, chunked, iterative) based on available RAM/VRAM — same API runs on a laptop or a workstation without code changes
+- **User feedback**: prints selected tier and shows a progress bar during the calculation
 
 ## Key Achievements
 - 🚀 **Performance**: ?? speedup with GPU implementation
