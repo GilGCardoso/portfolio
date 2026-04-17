@@ -47,7 +47,7 @@ def fetch_file(folder, file, invert=False):
     return img
 
 
-def binary_conversion(img, threshold_adjustment, window_size=15, delta_blur=0, sigma_weight=0.2):
+def binary_conversion(img, threshold_adjustment, window_size=15, delta_blur=0, sigma_weight=0.2, show_preview=True):
     """Apply Sauvola adaptive thresholding to produce a binary image.
 
     Parameters
@@ -62,6 +62,9 @@ def binary_conversion(img, threshold_adjustment, window_size=15, delta_blur=0, s
         Box-blur kernel size applied before thresholding; 0 disables blur (default 0).
     sigma_weight : float, optional
         Sauvola k-parameter controlling sensitivity to local variance (default 0.2).
+    show_preview : bool, optional
+        Display the thresholded image (default True). Set to False for
+        non-interactive or batch usage.
 
     Returns
     -------
@@ -72,10 +75,11 @@ def binary_conversion(img, threshold_adjustment, window_size=15, delta_blur=0, s
     threshold = threshold_sauvola(f_img, window_size=window_size, k=sigma_weight)
     binary_sauvola = f_img > threshold + threshold_adjustment
 
-    plt.figure(num=None, figsize=(18,12), dpi=100, facecolor='w', edgecolor='k')
-    plt.imshow(binary_sauvola, cmap='gray')
-    plt.axis('off')
-    plt.show()
+    if show_preview:
+        plt.figure(num=None, figsize=(18,12), dpi=100, facecolor='w', edgecolor='k')
+        plt.imshow(binary_sauvola, cmap='gray')
+        plt.axis('off')
+        plt.show()
 
     return binary_sauvola
 

@@ -158,7 +158,7 @@ def _iterative(d_x, d_y, q, N):
     return out
 
 
-def calculate_structure_factor(read_folder, file, range_calculation, vector_step, save_folder, device="cpu"):
+def calculate_structure_factor(read_folder, file, range_calculation, vector_step, save_folder, device="cpu", symmetric=False):
 
     if device == "cpu":
         torch_device = torch.device("cpu")
@@ -176,7 +176,7 @@ def calculate_structure_factor(read_folder, file, range_calculation, vector_step
     structure_to_calculate_tensor = torch.from_numpy(structure_to_calculate).to(torch.float32)
 
     D, N = get_calculation_parameters(structure_to_calculate)
-    d_x, d_y, q = generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, particle_distance=D)
+    d_x, d_y, q = generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, particle_distance=D, symmetric=symmetric)
 
     if torch_device.type == "cuda":
         torch.cuda.empty_cache()
@@ -204,12 +204,18 @@ def calculate_structure_factor(read_folder, file, range_calculation, vector_step
     structure_factor = structure_factor.cpu().numpy()
     q = q.cpu().numpy()
 
-    Sq, R = radial_average(structure_factor, q)
+    # Radial average uses only q >= 0; extract positive quadrant if symmetric
+    if symmetric:
+        q_pos = q[q >= 0]
+        idx = np.ix_(q >= 0, q >= 0)
+        Sq, R = radial_average(structure_factor[idx], q_pos)
+    else:
+        Sq, R = radial_average(structure_factor, q)
 
     save_data(structure_factor, q, D, Sq, R, save_folder, file)
 
 
-def generate_vectors(structure, domain, vector_step, particle_distance):
+def generate_vectors(structure, domain, vector_step, particle_distance, symmetric=False):
     """Build pairwise distance arrays and the scattering vector q.
 
     Parameters
@@ -246,7 +252,11 @@ def generate_vectors(structure, domain, vector_step, particle_distance):
     # Scattering vector normalised by average inter-particle distance
     border = domain / particle_distance
     step = vector_step / particle_distance
-    scat_vector = torch.arange(0, border, step)
+    q_pos = torch.arange(0, border, step)
+    if symmetric:
+        scat_vector = torch.cat((-q_pos[1:].flip(0), q_pos))
+    else:
+        scat_vector = q_pos
 
     return distances_x, distances_y, scat_vector
 
@@ -263,15 +273,16 @@ def get_calculation_parameters(structure):
     -------
     d_first_neighbours : float
         Mean distance to the nearest neighbour across all particles.
-    N_points : float
+    N_points : int
         Total number of particles.
     """
-    N_points = float(len(structure))
+    N_points = len(structure)
     tree = cKDTree(structure)
     d, k = tree.query(structure, k=2)
     d_first_neighbours = np.average(d[:, 1])
 
     return d_first_neighbours, N_points
+
 
 
 def radial_average(Sq, qD):
@@ -310,7 +321,7 @@ def radial_average(Sq, qD):
     bin_indices = np.digitize(R.flatten(), rad_bins) - 1
 
     structure_factor = np.zeros(N)
-    for n in range(N-1):
+    for n in range(N):
         mask = bin_indices == n
         if np.any(mask):
             structure_factor[n] = np.mean(Sq.flatten()[mask])
@@ -383,6 +394,7 @@ def plot_Sq_2D(folder_read, file, edge, x_axis='qD', save_plot=False,
 
     elif x_axis == 'xf':
         vector =   Sq2D_and_arrays[:,-1]
+        # Pixel-to-micron calibration for qD axis (adjust to your SEM system)
         vector /= 1.033e2
 
     bool_vec = (vector > -(edge[1])) & (vector < (edge[1]))
@@ -440,13 +452,15 @@ def vector_selection(array, axis_selection):
 
     elif axis_selection == 'xf':
         axis = array[1]*1e6
+        # Pixel-to-micron calibration for q axis (note: differs from plot_Sq_2D's 1.033e2)
         axis /= 1.033e4
 
     return axis
 
 
 def plot_Sq_1D(folder_read, file, labels, edges, x_axis='qD', save_plot=False,
-               folder_write='', log_scale=False, moving_average=False, n_ave=3, y_max=100):
+               folder_write='', log_scale=False, moving_average=False, n_ave=3, y_max=100,
+               ref_vlines=None, ref_hlines=None):
     """Plot one or more radially-averaged 1D structure factor curves.
 
     Parameters
@@ -474,6 +488,10 @@ def plot_Sq_1D(folder_read, file, labels, edges, x_axis='qD', save_plot=False,
         Window width for the moving average (default 3).
     y_max : float, optional
         Upper y-axis limit (default 100).
+    ref_vlines : list of (float, str) or None, optional
+        Vertical reference lines as (x_position, colour) pairs (default None).
+    ref_hlines : list of (float, str) or None, optional
+        Horizontal reference lines as (y_position, colour) pairs (default None).
     """
     # Configure matplotlib once before plotting
     plt.rcParams.update({'font.size': 20})
@@ -517,11 +535,12 @@ def plot_Sq_1D(folder_read, file, labels, edges, x_axis='qD', save_plot=False,
         plt.xlabel('x (micron)', fontsize=35)
 
     plt.ylabel('S(q)', fontsize=35)
-    # Reference lines — adjust to match your experimental system if needed
-    plt.axvline(x=2.19e6, color='k', lw=2, linestyle='dashed')
-    plt.axvline(x=1.57e7, color='k', lw=2, linestyle='dashed')
-    plt.axhline(y=0.05, color='g', lw=2)
-    plt.axhline(y=0.1, color='b', lw=2)
+    if ref_vlines:
+        for x, color in ref_vlines:
+            plt.axvline(x=x, color=color, lw=2, linestyle='dashed')
+    if ref_hlines:
+        for y, color in ref_hlines:
+            plt.axhline(y=y, color=color, lw=2)
     plt.ylim([0,y_max])
     plt.xlim(edges)
     plt.legend()

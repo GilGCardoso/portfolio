@@ -121,64 +121,39 @@ def make_correlated_disorder(N, mesh_precision, iterations, periodic_boundaries=
     correlated_disorder_structure[:, 1] *= max_xy[1]
     logger.debug("Starting correlated disorder generation with N=%d points", N)
 
-    if periodic_boundaries:
-        if show_iteration:
+    for i in range(iterations):
+        logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
+
+        if periodic_boundaries:
             if show_boundaries:
-                for i in range(iterations):
-                    logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
-                    current_iteration = correlated_disorder_structure
-                    current_iteration, to_remove, edges = structure_w_boundaries(current_iteration, show_boundaries)
-                    edgex_left, edgex_right, edgey_low, edgex_up = edges
+                current_iteration, to_remove, edges = structure_w_boundaries(
+                    correlated_disorder_structure, return_edges=True
+                )
+            else:
+                current_iteration, to_remove = structure_w_boundaries(correlated_disorder_structure)
+        else:
+            current_iteration = correlated_disorder_structure
 
-                    figure(num=None, figsize=(12, 12))
-                    plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
-                    plt.plot(edgex_left[:, 0], edgex_left[:, 1], '.')
-                    plt.plot(edgex_right[:, 0], edgex_right[:, 1], '.')
-                    plt.plot(edgey_low[:, 0], edgey_low[:, 1], '.')
-                    plt.plot(edgex_up[:, 0], edgex_up[:, 1], '.')
-                    plt.show()
-
-                    current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
-                    correlated_disorder_structure = current_iteration[:-to_remove]
-
-            if not show_boundaries:
-                for i in range(iterations):
-                    logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
-                    current_iteration = correlated_disorder_structure
-                    current_iteration, to_remove = structure_w_boundaries(current_iteration)
-
-                    figure(num=None, figsize=(12, 12))
-                    plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
-                    plt.show()
-
-                    current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
-                    correlated_disorder_structure = current_iteration[:-to_remove]
-
-        if not show_iteration:
-            for i in range(iterations):
-                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
-                current_iteration = correlated_disorder_structure
-                current_iteration, to_remove = structure_w_boundaries(current_iteration)
-                current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
-                correlated_disorder_structure = current_iteration[:-to_remove]
-
-    if not periodic_boundaries:
         if show_iteration:
-            for i in range(iterations):
-                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
-
-                figure(num=None, figsize=(12, 12))
-                plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
+            figure(num=None, figsize=(12, 12))
+            plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
+            if periodic_boundaries and show_boundaries:
+                edgex_left, edgex_right, edgey_low, edgex_up = edges
+                plt.plot(edgex_left[:, 0], edgex_left[:, 1], '.')
+                plt.plot(edgex_right[:, 0], edgex_right[:, 1], '.')
+                plt.plot(edgey_low[:, 0], edgey_low[:, 1], '.')
+                plt.plot(edgex_up[:, 0], edgex_up[:, 1], '.')
+            if not periodic_boundaries:
                 plt.axis('off')
                 plt.axis('equal')
-                plt.show()
+            plt.show()
 
-                correlated_disorder_structure = calculate_new_positions(correlated_disorder_structure, max_xy, mesh_precision)
+        current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
 
-        if not show_iteration:
-            for i in range(iterations):
-                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
-                correlated_disorder_structure = calculate_new_positions(correlated_disorder_structure, max_xy, mesh_precision)
+        if periodic_boundaries:
+            correlated_disorder_structure = current_iteration[:-to_remove]
+        else:
+            correlated_disorder_structure = current_iteration
 
     correlated_disorder_structure = correct_edges(correlated_disorder_structure)
 
