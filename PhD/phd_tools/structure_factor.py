@@ -1,8 +1,10 @@
-    # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-Created on Fri May 15 12:06:43 2020
+Structure factor S(q) calculation, radial averaging, file I/O, and plotting.
 
-@author: Gil
+Supports CPU and GPU (CUDA) execution with adaptive memory management:
+three computation tiers (matrix, matrix_by_parts, iterative) are selected
+automatically based on available memory.
 """
 
 import matplotlib
@@ -174,7 +176,7 @@ def calculate_structure_factor(read_folder, file, range_calculation, vector_step
     structure_to_calculate_tensor = torch.from_numpy(structure_to_calculate).to(torch.float32)
 
     D, N = get_calculation_parameters(structure_to_calculate)
-    d_x, d_y, q = generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, D)
+    d_x, d_y, q = generate_vectors(structure_to_calculate_tensor, range_calculation, vector_step, particle_distance=D)
 
     if torch_device.type == "cuda":
         torch.cuda.empty_cache()
@@ -207,58 +209,104 @@ def calculate_structure_factor(read_folder, file, range_calculation, vector_step
     save_data(structure_factor, q, D, Sq, R, save_folder, file)
 
 
-def generate_vectors(structure, domain, vector_step, particule_distance):
-    """Generates the vector used for the calculation of the structure factor.
-    distances_x, distances_y : vectors that contains the distances between all points along the x anf y axis respectivly
-    scat_vector : the scatterring vector used for the calculation"""
+def generate_vectors(structure, domain, vector_step, particle_distance):
+    """Build pairwise distance arrays and the scattering vector q.
 
-    coord_x = structure[:,0]
-    coord_y = structure[:,1]
+    Parameters
+    ----------
+    structure : torch.Tensor, shape (N, 2)
+        Particle (x, y) coordinates.
+    domain : float
+        Upper bound of the q-range in real-space units (same as coordinates).
+    vector_step : float
+        Step size of the scattering vector in the same units as ``domain``.
+    particle_distance : float
+        Average nearest-neighbour distance D used to normalise q (so the
+        returned vector is dimensionless: q·D).
 
-    #create distance array for x an y
-    coord_x_ = coord_x.reshape(len(coord_x),1)
-    distances_x = (coord_x - coord_x_).reshape(1,len(coord_x)**2)
+    Returns
+    -------
+    distances_x : torch.Tensor, shape (1, N²)
+        Flattened pairwise x-displacements.
+    distances_y : torch.Tensor, shape (1, N²)
+        Flattened pairwise y-displacements.
+    scat_vector : torch.Tensor, shape (nq,)
+        Scattering vector values normalised by D.
+    """
+    coord_x = structure[:, 0]
+    coord_y = structure[:, 1]
 
-    coord_y_ = coord_y.reshape(len(coord_y),1)
-    distances_y= (coord_y - coord_y_).reshape(1,len(coord_y)**2)
+    # Build pairwise distance arrays via outer subtraction
+    coord_x_ = coord_x.reshape(len(coord_x), 1)
+    distances_x = (coord_x - coord_x_).reshape(1, len(coord_x) ** 2)
 
-    #set q vector
-    border = domain/particule_distance;
-    step = vector_step/particule_distance;
-    scat_vector = torch.arange(0,border,step)
+    coord_y_ = coord_y.reshape(len(coord_y), 1)
+    distances_y = (coord_y - coord_y_).reshape(1, len(coord_y) ** 2)
+
+    # Scattering vector normalised by average inter-particle distance
+    border = domain / particle_distance
+    step = vector_step / particle_distance
+    scat_vector = torch.arange(0, border, step)
 
     return distances_x, distances_y, scat_vector
 
-def get_calculation_parameters(structure):
-    """return the parameters that are necessary for the calculation
-    N_points : The amount of points in the structure
-    d_first_neighbours : The average distance between first neighbours"""
 
+def get_calculation_parameters(structure):
+    """Return the average nearest-neighbour distance D and particle count N.
+
+    Parameters
+    ----------
+    structure : numpy.ndarray, shape (N, 2)
+        Particle (x, y) coordinates.
+
+    Returns
+    -------
+    d_first_neighbours : float
+        Mean distance to the nearest neighbour across all particles.
+    N_points : float
+        Total number of particles.
+    """
     N_points = float(len(structure))
-    tree = cKDTree(structure)  # create tree of closest neighbours
-    d, k = tree.query(structure,k=2)
-    d_first_neighbours = np.average(d[:,1])
+    tree = cKDTree(structure)
+    d, k = tree.query(structure, k=2)
+    d_first_neighbours = np.average(d[:, 1])
 
     return d_first_neighbours, N_points
 
-def radial_average(Sq,qD):
-    """
-    Compute radial average of 2D structure factor using vectorized binning.
-    O(N log N) complexity instead of O(N²) with masking.
+
+def radial_average(Sq, qD):
+    """Compute the radial average of a 2D structure factor using vectorised binning.
+
+    Bins are placed at the midpoints of the q-vector, and each bin's value is
+    the mean of all S(q) cells whose radius falls within that bin.
+    O(N log N) complexity via ``np.digitize`` instead of O(N²) masking.
+
+    Parameters
+    ----------
+    Sq : numpy.ndarray, shape (N, N)
+        2D structure factor matrix.
+    qD : numpy.ndarray, shape (N,)
+        1D scattering vector (normalised by D) used for both axes.
+
+    Returns
+    -------
+    structure_factor : numpy.ndarray, shape (N,)
+        Radially-averaged S(q); bins with no data are set to NaN.
+    r : numpy.ndarray, shape (N,)
+        Bin midpoint values (same units as qD).
     """
     N = len(Sq)
-    #build matrix of radial distances
-    x_q,y_q = np.meshgrid(qD,qD)
-    R  = (x_q**2 + y_q**2)**0.5
+    # Build radial distance matrix
+    x_q, y_q = np.meshgrid(qD, qD)
+    R = (x_q ** 2 + y_q ** 2) ** 0.5
 
-    #array for radial bins
-    step = qD[1]-qD[0]
-    rad_bins = np.linspace(-step/2,np.max(qD)+step/2,num=N+1)
+    # Define bin edges centred on each q step
+    step = qD[1] - qD[0]
+    rad_bins = np.linspace(-step / 2, np.max(qD) + step / 2, num=N + 1)
 
-    #mid points for each bins to be used as x axis
-    r = (rad_bins[0:-1]+rad_bins[1:])/2
+    # Bin midpoints used as the x-axis for the returned curve
+    r = (rad_bins[:-1] + rad_bins[1:]) / 2
 
-    #calculate radial average using vectorized binning
     bin_indices = np.digitize(R.flatten(), rad_bins) - 1
 
     structure_factor = np.zeros(N)
@@ -270,6 +318,7 @@ def radial_average(Sq,qD):
             structure_factor[n] = float('nan')
 
     return structure_factor, r
+
 
 def save_data(Sq_2D, q, D, Sq, R, save_folder, filename):
     # Ensure we save real-valued arrays (take absolute value for complex data)
@@ -298,10 +347,31 @@ def save_data(Sq_2D, q, D, Sq, R, save_folder, filename):
                header='The row order is Sq,q,q.D.')
 
 
-def plot_Sq_2D (folder_read, file, edge, x_axis = 'qD', save_plot = False,
-                folder_write ='', log_scale = False, max_value = 100):
+def plot_Sq_2D(folder_read, file, edge, x_axis='qD', save_plot=False,
+               folder_write='', log_scale=False, max_value=100):
+    """Plot the 2D structure factor as a colour map.
 
-    Sq2D_and_arrays = np.loadtxt(folder_read + file + '.dat', delimiter=',' )
+    Parameters
+    ----------
+    folder_read : str
+        Directory containing the ``.dat`` file.
+    file : str
+        Filename **without** the ``.dat`` extension.
+    edge : tuple of float
+        (min, max) axis limits for both qx and qy.
+    x_axis : {'qD', 'q', 'xf'}, optional
+        Axis units: 'qD' for dimensionless q·D (default), 'q' for q in m⁻¹,
+        'xf' for real-space microns.
+    save_plot : bool, optional
+        Save the figure to ``folder_write`` (default False).
+    folder_write : str, optional
+        Output directory for the saved figure.
+    log_scale : bool, optional
+        Use logarithmic colour scale (default False).
+    max_value : float, optional
+        Colour scale upper limit (default 100).
+    """
+    Sq2D_and_arrays = np.loadtxt(folder_read + file + '.dat', delimiter=',')
 
     Sq_2D = Sq2D_and_arrays[:,:-2]
 
@@ -314,8 +384,6 @@ def plot_Sq_2D (folder_read, file, edge, x_axis = 'qD', save_plot = False,
     elif x_axis == 'xf':
         vector =   Sq2D_and_arrays[:,-1]
         vector /= 1.033e2
-
-    #Sq_2D = remove_center_2D(Sq_2D,vector,edge[0])
 
     bool_vec = (vector > -(edge[1])) & (vector < (edge[1]))
     vector = vector[bool_vec]
@@ -332,28 +400,22 @@ def plot_Sq_2D (folder_read, file, edge, x_axis = 'qD', save_plot = False,
 
 
     if log_scale:
-        plot = plt.pcolor( vector , vector, Sq_2D, rasterized=True, cmap='jet', shading='auto', vmax= max_value, norm=matplotlib.colors.LogNorm())
-
-    else :
-        plot = plt.pcolor( vector , vector, Sq_2D, rasterized=True, cmap='jet', shading='auto', vmax= max_value)
-    #plt.title('2D structure factor')
+        plot = plt.pcolor(vector, vector, Sq_2D, rasterized=True, cmap='jet', shading='auto', vmax=max_value, norm=matplotlib.colors.LogNorm())
+    else:
+        plot = plt.pcolor(vector, vector, Sq_2D, rasterized=True, cmap='jet', shading='auto', vmax=max_value)
 
     if x_axis == 'q':
         plt.xlabel('qx (m\u207B\u00B9)')
         plt.ylabel('qy (m\u207B\u00B9)')
-
     elif x_axis == 'qD':
-        plt.xlabel('qx (m\u207B\u00B9)')
-        plt.ylabel('qy (m\u207B\u00B9)')
-
+        plt.xlabel('qx\u00B7D')
+        plt.ylabel('qy\u00B7D')
     elif x_axis == 'xf':
-        plt.xlabel('x(micron)')
-        plt.ylabel('y(micron)')
+        plt.xlabel('x (micron)')
+        plt.ylabel('y (micron)')
 
     ax.set_aspect('equal')
-    #plt.xlim(0, 4.5e7)   # set the xlim to left, right
-    #plt.ylim(0, 4.5e7)
-    cbar = plt.colorbar(plot, shrink = 0.65)
+    cbar = plt.colorbar(plot, shrink=0.65)
     cbar.ax.tick_params(labelsize=20)
     plt.tight_layout()
 
@@ -383,8 +445,36 @@ def vector_selection(array, axis_selection):
     return axis
 
 
-def plot_Sq_1D(folder_read, file, labels, edges, x_axis = 'qD', save_plot = False, folder_write ='', log_scale = False, moving_average = False, n_ave = 3, y_max = 100):
+def plot_Sq_1D(folder_read, file, labels, edges, x_axis='qD', save_plot=False,
+               folder_write='', log_scale=False, moving_average=False, n_ave=3, y_max=100):
+    """Plot one or more radially-averaged 1D structure factor curves.
 
+    Parameters
+    ----------
+    folder_read : str
+        Directory containing the ``.dat`` files.
+    file : list of str
+        Filenames **without** the ``.dat`` extension, one per curve.
+    labels : list of str
+        Legend labels corresponding to each entry in ``file``.
+    edges : tuple of float
+        (min, max) axis range for the x-axis.
+    x_axis : {'qD', 'q', 'xf'}, optional
+        Axis units: 'qD' for dimensionless q·D (default), 'q' for q in m⁻¹,
+        'xf' for real-space microns.
+    save_plot : bool, optional
+        Save the figure to ``folder_write`` (default False).
+    folder_write : str, optional
+        Output directory for the saved figure.
+    log_scale : bool, optional
+        Use logarithmic y-scale (default False).
+    moving_average : bool, optional
+        Apply a simple moving average over ``n_ave`` points (default False).
+    n_ave : int, optional
+        Window width for the moving average (default 3).
+    y_max : float, optional
+        Upper y-axis limit (default 100).
+    """
     # Configure matplotlib once before plotting
     plt.rcParams.update({'font.size': 20})
     plt.rc('legend', fontsize=20)
@@ -395,54 +485,48 @@ def plot_Sq_1D(folder_read, file, labels, edges, x_axis = 'qD', save_plot = Fals
 
     figure(num=None, figsize=(15, 10), dpi=100, facecolor='w', edgecolor='k')
 
-    markers_array = np.asarray(["v", "o", "^", "s", "<", "x", ">","v", "o", "^", "s", "<", "x", ">"])
+    markers_array = np.asarray(["v", "o", "^", "s", "<", "x", ">", "v", "o", "^", "s", "<", "x", ">"])
     for count, Sq_and_array in enumerate(file):
 
         Sq_and_arrays = np.genfromtxt(folder_read + str(file[count]) + '.dat', delimiter=',')
 
         Sq = Sq_and_arrays[0]
 
-
         if moving_average:
-
             Sq_mov_ave = np.zeros(len(Sq) - n_ave)
-
             for p in range(len(Sq) - n_ave):
                 Sq_mov_ave[p] = np.mean(Sq[p:p + n_ave])
-
             Sq = np.append(Sq[:n_ave], Sq_mov_ave)
 
-        vector = vector_selection(Sq_and_arrays,x_axis)
+        vector = vector_selection(Sq_and_arrays, x_axis)
 
-        Sq = Sq[(np.logical_and((edges[0] < vector), (vector < edges[1])))]
-        vector = vector[(np.logical_and((edges[0] < vector), (vector < edges[1])))]
+        in_range = np.logical_and(edges[0] < vector, vector < edges[1])
+        Sq = Sq[in_range]
+        vector = vector[in_range]
 
-
-        plt.plot(vector,Sq, marker = markers_array[count], ms=6, lw=2, label= labels[count])
-
+        plt.plot(vector, Sq, marker=markers_array[count], ms=6, lw=2, label=labels[count])
 
     if log_scale:
         plt.yscale("log")
 
     if x_axis == 'q':
         plt.xlabel('q (m\u207B\u00B9)', fontsize=35)
-
     elif x_axis == 'qD':
-        plt.xlabel('q (m\u207B\u00B9)', fontsize=35)
-
+        plt.xlabel('q\u00B7D', fontsize=35)
     elif x_axis == 'xf':
-        plt.xlabel('x(micron)', fontsize=35)
+        plt.xlabel('x (micron)', fontsize=35)
 
     plt.ylabel('S(q)', fontsize=35)
-    plt.axvline(x=2.19e6, color='k', lw = 2, linestyle='dashed')
-    plt.axvline(x=1.57e7, color='k', lw = 2, linestyle='dashed')
-    plt.axhline(y=0.05, color='g', lw = 2)
-    plt.axhline(y=0.1, color='b', lw = 2)
+    # Reference lines — adjust to match your experimental system if needed
+    plt.axvline(x=2.19e6, color='k', lw=2, linestyle='dashed')
+    plt.axvline(x=1.57e7, color='k', lw=2, linestyle='dashed')
+    plt.axhline(y=0.05, color='g', lw=2)
+    plt.axhline(y=0.1, color='b', lw=2)
     plt.ylim([0,y_max])
     plt.xlim(edges)
     plt.legend()
-    plt.tight_layout
+    plt.tight_layout()
 
     if save_plot:
-        plt.tight_layout
+        plt.tight_layout()
         plt.savefig( folder_write + 'Sq_' + 'multiple_filtered_areas' + "_edges_" + str(edges[0]) + '_' + str(edges[1]) + '.svg')

@@ -2,13 +2,14 @@
 """
 Correlated disorder structure generation and density reduction.
 
-Merged from:
-  - Structure_generation/Correlated_disorder_generation.py (Created Thu Apr 30 2020)
-  - Structure_generation/Density_reduction.py (Created Wed May 20 2020)
-
-@author: Gil
+Provides tools to:
+- Generate 2D correlated disorder point structures via iterative Voronoi
+  relaxation (Lloyd-style), with optional periodic boundary conditions.
+- Reduce particle density within spatially defined polygonal areas.
+- Generate reference hexagonal close-packed structures.
 """
 
+import logging
 import numpy as np
 from numpy import genfromtxt, sin, cos
 from numpy.lib.scimath import sqrt
@@ -19,6 +20,8 @@ from numpy import pi
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Correlated disorder generation
@@ -27,7 +30,7 @@ from shapely.geometry.polygon import Polygon
 def select_boundary_points(structure_wo_borders, edge_size=1):
     """Takes edge_size(default = 1) times sqrt(total_number of points) from the
     each edge of the structure and moves them to the opposite creating
-    ficticinal periodic boundaries"""
+    fictitious periodic boundaries"""
     N = len(structure_wo_borders)
 
     sorted_x_struc = structure_wo_borders[np.argsort(structure_wo_borders[:,0])]
@@ -89,81 +92,92 @@ def calculate_new_positions(structure, limits, mesh_precision=10):
 
 
 def correct_edges(structure):
+    """Shift the structure so that its minimum x and y coordinates are zero.
 
-    structure[:,0] = structure[:,0] - np.min(structure[:,0])
-    structure[:,1] = structure[:,1] - np.min(structure[:,1])
+    Parameters
+    ----------
+    structure : numpy.ndarray, shape (N, 2)
+        Particle (x, y) coordinates, modified in-place.
+
+    Returns
+    -------
+    numpy.ndarray, shape (N, 2)
+        Coordinate-shifted structure.
+    """
+    structure[:, 0] = structure[:, 0] - np.min(structure[:, 0])
+    structure[:, 1] = structure[:, 1] - np.min(structure[:, 1])
 
     return structure
 
 
-def make_correlated_disorder(N, mesh_precision, iterations, perodic_boundaries=False, show_iteration=False, show_boundaries=False, max_xy=np.asarray([1,1])):
+def make_correlated_disorder(N, mesh_precision, iterations, periodic_boundaries=False, show_iteration=False, show_boundaries=False, max_xy=np.asarray([1,1])):
     """Generates a correlated disorder structure and plots the structure
     evolution and boundaries if required.
     The programs plots once for every iteration so it is not recomended for many
     iterations. To be used mostly for testing and check errors"""
 
     correlated_disorder_structure = np.random.rand(N, 2)
-    correlated_disorder_structure[:,0] *= max_xy[0]
-    correlated_disorder_structure[:,1] *= max_xy[1]
-    print(len(correlated_disorder_structure))
+    correlated_disorder_structure[:, 0] *= max_xy[0]
+    correlated_disorder_structure[:, 1] *= max_xy[1]
+    logger.debug("Starting correlated disorder generation with N=%d points", N)
 
-    if perodic_boundaries:
+    if periodic_boundaries:
         if show_iteration:
             if show_boundaries:
                 for i in range(iterations):
-                    print(f"{100*i/iterations} %")
+                    logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
                     current_iteration = correlated_disorder_structure
                     current_iteration, to_remove, edges = structure_w_boundaries(current_iteration, show_boundaries)
                     edgex_left, edgex_right, edgey_low, edgex_up = edges
 
                     figure(num=None, figsize=(12, 12))
-                    plt.plot(correlated_disorder_structure[:,0], correlated_disorder_structure[:,1], '.')
-                    plt.plot(edgex_left[:,0], edgex_left[:,1], '.')
-                    plt.plot(edgex_right[:,0], edgex_right[:,1], '.')
-                    plt.plot(edgey_low[:,0], edgey_low[:,1], '.')
-                    plt.plot(edgex_up[:,0], edgex_up[:,1], '.')
+                    plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
+                    plt.plot(edgex_left[:, 0], edgex_left[:, 1], '.')
+                    plt.plot(edgex_right[:, 0], edgex_right[:, 1], '.')
+                    plt.plot(edgey_low[:, 0], edgey_low[:, 1], '.')
+                    plt.plot(edgex_up[:, 0], edgex_up[:, 1], '.')
                     plt.show()
 
                     current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
                     correlated_disorder_structure = current_iteration[:-to_remove]
 
-            if not(show_boundaries):
+            if not show_boundaries:
                 for i in range(iterations):
-                    print(f"{100*i/iterations} %")
+                    logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
                     current_iteration = correlated_disorder_structure
                     current_iteration, to_remove = structure_w_boundaries(current_iteration)
 
                     figure(num=None, figsize=(12, 12))
-                    plt.plot(correlated_disorder_structure[:,0], correlated_disorder_structure[:,1], '.')
+                    plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
                     plt.show()
 
                     current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
                     correlated_disorder_structure = current_iteration[:-to_remove]
 
-        if not(show_iteration):
+        if not show_iteration:
             for i in range(iterations):
-                print(f"{100*i/iterations} %")
+                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
                 current_iteration = correlated_disorder_structure
                 current_iteration, to_remove = structure_w_boundaries(current_iteration)
                 current_iteration = calculate_new_positions(current_iteration, max_xy, mesh_precision)
                 correlated_disorder_structure = current_iteration[:-to_remove]
 
-    if not(perodic_boundaries):
+    if not periodic_boundaries:
         if show_iteration:
             for i in range(iterations):
-                print(f"{100*i/iterations} %")
+                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
 
                 figure(num=None, figsize=(12, 12))
-                plt.plot(correlated_disorder_structure[:,0], correlated_disorder_structure[:,1], '.')
+                plt.plot(correlated_disorder_structure[:, 0], correlated_disorder_structure[:, 1], '.')
                 plt.axis('off')
                 plt.axis('equal')
                 plt.show()
 
                 correlated_disorder_structure = calculate_new_positions(correlated_disorder_structure, max_xy, mesh_precision)
 
-        if not(show_iteration):
+        if not show_iteration:
             for i in range(iterations):
-                print(f"{100*i/iterations} %")
+                logger.debug("Iteration %d / %d (%.0f%%)", i + 1, iterations, 100 * i / iterations)
                 correlated_disorder_structure = calculate_new_positions(correlated_disorder_structure, max_xy, mesh_precision)
 
     correlated_disorder_structure = correct_edges(correlated_disorder_structure)
@@ -176,7 +190,20 @@ def make_correlated_disorder(N, mesh_precision, iterations, perodic_boundaries=F
 # ---------------------------------------------------------------------------
 
 def load_positions_files(filename, location):
+    """Load particle positions from a CSV file.
 
+    Parameters
+    ----------
+    filename : str
+        Filename without the ``.csv`` extension.
+    location : str
+        Directory path containing the file.
+
+    Returns
+    -------
+    numpy.ndarray, shape (N, 2)
+        Array of (x, y) particle coordinates.
+    """
     particle_positions = genfromtxt(location + '/' + filename + '.csv', delimiter=',')
 
     return particle_positions
@@ -188,9 +215,7 @@ def define_areas_disorder_edge(edge, areas, radius, circle_prec):
 
     tree_edges = cKDTree(edge)
 
-    circle_steps = 100
     limit_circle = np.empty(shape=[circle_prec, 2])
-    structure = []
     polygons = []
 
     for a, p in enumerate(areas):
@@ -217,7 +242,7 @@ def define_areas_disorder_edge(edge, areas, radius, circle_prec):
 
 
 def generation_hexa(l, d):
-    """Generates a hexagonal compact structure. approx_N is the approximate numebr of points the structure will have."""
+    """Generates a hexagonal compact structure. approx_N is the approximate number of points the structure will have."""
 
     hexa = np.asarray([[0,0]])
 
@@ -255,26 +280,77 @@ def select_area_points(areas, particles, inside=True):
     return particles
 
 
-def select_inside_circle(particules, centers, radius_ratio=1):
-    """Selects particules inside a circle defined by the centers in the "centers" array and with radius equal to average distance
-    between centers divided by 2 times the value of "radius_ratio" """
+def select_inside_circle(particles, centers, radius_ratio=1):
+    """Return indices of particles that fall inside circles centred on ``centers``.
 
+    The circle radius is half the average nearest-neighbour distance between
+    centres, scaled by ``radius_ratio``.
+
+    Parameters
+    ----------
+    particles : numpy.ndarray, shape (N, 2)
+        Candidate particle coordinates.
+    centers : numpy.ndarray, shape (M, 2)
+        Circle centre coordinates.
+    radius_ratio : float, optional
+        Divisor applied to the half-spacing radius (default 1 — no scaling).
+
+    Returns
+    -------
+    numpy.ndarray of int
+        Unique indices into ``particles`` for all particles inside any circle.
+    """
     tree_centers = cKDTree(centers)
     d_centers, k_centers = tree_centers.query(centers, k=2)
-    radius = np.average(d_centers[:,1])/(2*radius_ratio)
-    print(radius)
+    radius = np.average(d_centers[:, 1]) / (2 * radius_ratio)
 
-    tree_particules = cKDTree(particules)
+    tree_particles = cKDTree(particles)
+    d_particles, k_particles = tree_particles.query(centers, k=int(len(particles) / len(centers)))
 
-    d_particules, k_particules = tree_particules.query(centers, k=int(len(particules)/len(centers)))
-
-    points_inside_circles = np.unique(k_particules[(d_particules < radius)])
+    points_inside_circles = np.unique(k_particles[(d_particles < radius)])
 
     return points_inside_circles
 
 
 def define_area_distance_and_radius(particles_positions, area_distance, adjust_method='size', original_size=1, obj_size=0.2, obj_d_ave=0.2, density_reduction_proportion=0.5, keep_inside=True):
+    """Generate correlated-disorder areas scaled to match a target particle structure.
 
+    Iteratively adjusts the number of zones and the zone radius until both the
+    mean inter-zone distance and the total covered area converge to within 1 %
+    of the targets.
+
+    Parameters
+    ----------
+    particles_positions : numpy.ndarray, shape (N, 2)
+        Particle coordinates used to determine the scale of the output areas.
+    area_distance : float
+        Target mean distance between area centres (in the same units as
+        ``particles_positions``).
+    adjust_method : {'size', 'distance'}, optional
+        How to map particle coordinates onto the area layout space:
+        'size' scales by ``original_size / obj_size`` (default);
+        'distance' scales by the measured mean spacing / ``obj_d_ave``.
+    original_size : float, optional
+        Physical size of the particle structure (used with adjust_method='size').
+    obj_size : float, optional
+        Target physical size (used with adjust_method='size').
+    obj_d_ave : float, optional
+        Target mean inter-particle distance (used with adjust_method='distance').
+    density_reduction_proportion : float, optional
+        Fraction of the total area that should be covered by zones (default 0.5).
+    keep_inside : bool, optional
+        If True, particles inside the zones are kept; if False, they are removed
+        (default True). Affects how the density proportion is interpreted.
+
+    Returns
+    -------
+    areas_poly : list of shapely.Polygon
+        Polygon boundaries of each area zone.
+    d_ave : float
+        Measured mean inter-zone distance after convergence.
+    r : float
+        Final zone radius after convergence.
+    """
     particles_tree = cKDTree(particles_positions)
 
     d, k = particles_tree.query(particles_positions, k=7)
@@ -290,50 +366,41 @@ def define_area_distance_and_radius(particles_positions, area_distance, adjust_m
     if keep_inside:
         density_adjust = density_reduction_proportion
 
-    elif not(keep_inside):
+    elif not keep_inside:
         density_adjust = 1 - density_reduction_proportion
 
-    limits = np.asarray([np.max(particles_positions[:,0]), np.max(particles_positions[:,1])])*adjust_value
-    N_zones = int((2/(sqrt(3)*area_distance**2))*(limits[0]*limits[1]))
+    limits = np.asarray([np.max(particles_positions[:, 0]), np.max(particles_positions[:, 1])]) * adjust_value
+    N_zones = int((2 / (sqrt(3) * area_distance ** 2)) * (limits[0] * limits[1]))
 
     while True:
-
-        areas_c = make_correlated_disorder(N_zones, 20, 100, perodic_boundaries=True, max_xy=limits)
+        areas_c = make_correlated_disorder(N_zones, 20, 100, periodic_boundaries=True, max_xy=limits)
 
         masque_tree = cKDTree(areas_c)
-
         d, k = masque_tree.query(areas_c, k=2)
+        d_ave = np.average(d[:, 1:])
 
-        d_ave = np.average(d[:,1:])
+        correc_factor = area_distance / d_ave
+        logger.debug("Zone spacing correction factor: %.4f", correc_factor)
 
-        correc_factor = area_distance/d_ave
-        print(correc_factor)
-
-        if (correc_factor > 0.99 and correc_factor < 1.01):
+        if 0.99 < correc_factor < 1.01:
             break
 
-        N_zones = int(N_zones/correc_factor**2)
+        N_zones = int(N_zones / correc_factor ** 2)
 
-    surface_to_cover = (limits[0]*limits[1])*density_adjust
+    surface_to_cover = (limits[0] * limits[1]) * density_adjust
+    N_edges = N_zones * 20
+    areas_e = make_correlated_disorder(N_edges, 20, 100, periodic_boundaries=True, max_xy=limits)
 
-    N_edges = N_zones*20
-
-    areas_e = make_correlated_disorder(N_edges, 20, 100, perodic_boundaries=True, max_xy=limits)
-
-    r = sqrt((surface_to_cover)/(N_zones*pi))
+    r = sqrt((surface_to_cover) / (N_zones * pi))
 
     while True:
-
         areas_poly = define_areas_disorder_edge(areas_e, areas_c, r, 100)
 
-        tot_area = 0
-        for a in areas_poly:
-            tot_area += a.area
+        tot_area = sum(a.area for a in areas_poly)
+        correction = surface_to_cover / tot_area
+        logger.debug("Area coverage correction factor: %.4f", correction)
 
-        correction = surface_to_cover/tot_area
-        print(correction)
-
-        if (correction > 0.99 and correction < 1.01):
+        if 0.99 < correction < 1.01:
             break
 
         r *= sqrt(correction)
@@ -342,47 +409,61 @@ def define_area_distance_and_radius(particles_positions, area_distance, adjust_m
 
 
 def create_areas(area_distance, limits, density_reduction_proportion=0.5):
+    """Generate a set of correlated-disorder polygonal areas within a given bounding box.
 
-    N_zones = int((2/(sqrt(3)*area_distance**2))*(limits[0]*limits[1]))
+    Unlike :func:`define_area_distance_and_radius`, this function works directly
+    in the coordinate space of ``limits`` without any scaling step.
+
+    Parameters
+    ----------
+    area_distance : float
+        Target mean distance between area centres.
+    limits : array-like of float, shape (2,)
+        (width, height) of the bounding box.
+    density_reduction_proportion : float, optional
+        Fraction of the total bounding-box area that should be covered by zones
+        (default 0.5).
+
+    Returns
+    -------
+    areas_poly : list of shapely.Polygon
+        Polygon boundaries of each area zone.
+    d_ave : float
+        Measured mean inter-zone distance after convergence.
+    r : float
+        Final zone radius after convergence.
+    """
+    N_zones = int((2 / (sqrt(3) * area_distance ** 2)) * (limits[0] * limits[1]))
 
     while True:
-
-        areas_c = make_correlated_disorder(N_zones, 20, 100, perodic_boundaries=True, max_xy=limits)
+        areas_c = make_correlated_disorder(N_zones, 20, 100, periodic_boundaries=True, max_xy=limits)
 
         masque_tree = cKDTree(areas_c)
-
         d, k = masque_tree.query(areas_c, k=2)
+        d_ave = np.average(d[:, 1:])
 
-        d_ave = np.average(d[:,1:])
+        correc_factor = area_distance / d_ave
+        logger.debug("Zone spacing correction factor: %.4f", correc_factor)
 
-        correc_factor = area_distance/d_ave
-        print(correc_factor)
-
-        if (correc_factor > 0.99 and correc_factor < 1.01):
+        if 0.99 < correc_factor < 1.01:
             break
 
-        N_zones = int(N_zones/correc_factor**2)
+        N_zones = int(N_zones / correc_factor ** 2)
 
-    surface_to_cover = (limits[0]*limits[1])*density_reduction_proportion
+    surface_to_cover = (limits[0] * limits[1]) * density_reduction_proportion
+    N_edges = N_zones * 20
+    areas_e = make_correlated_disorder(N_edges, 20, 100, periodic_boundaries=True, max_xy=limits)
 
-    N_edges = N_zones*20
-
-    areas_e = make_correlated_disorder(N_edges, 20, 100, perodic_boundaries=True, max_xy=limits)
-
-    r = sqrt((surface_to_cover)/(N_zones*pi))
+    r = sqrt((surface_to_cover) / (N_zones * pi))
 
     while True:
-
         areas_poly = define_areas_disorder_edge(areas_e, areas_c, r, 100)
 
-        tot_area = 0
-        for a in areas_poly:
-            tot_area += a.area
+        tot_area = sum(a.area for a in areas_poly)
+        correction = surface_to_cover / tot_area
+        logger.debug("Area coverage correction factor: %.4f", correction)
 
-        correction = surface_to_cover/tot_area
-        print(correction)
-
-        if (correction > 0.99 and correction < 1.01):
+        if 0.99 < correction < 1.01:
             break
 
         r *= sqrt(correction)

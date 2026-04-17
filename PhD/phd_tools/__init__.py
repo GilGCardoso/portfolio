@@ -2,7 +2,7 @@ from .sem import (
     fetch_file,
     binary_conversion,
     area_selection,
-    visualise_selected_particules,
+    visualise_selected_particles,
     save_positions_array,
     detect_angle_orientation,
     detect_angle_variation,
